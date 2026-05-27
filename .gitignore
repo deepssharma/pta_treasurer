@@ -5,6 +5,8 @@ data/
 *.xlsx
 *.pdf
 *.csv
+debug_*.png
+debug_*.jpg
 .env
 __pycache__/
 *.pyc
