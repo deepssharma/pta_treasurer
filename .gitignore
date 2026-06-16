@@ -6,9 +6,12 @@ files/
 *.xlsx
 *.pdf
 *.csv
+commit.sh
 debug_*.png
 debug_*.jpg
 .env
 __pycache__/
 *.pyc
+tests/fixtures/*.pdf
+tests/fixtures/*.csv
 .DS_Store

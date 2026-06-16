@@ -1,6 +1,7 @@
 """
 Tests for parsers.py helper functions
 """
+import pytest
 import sys
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from parsers import _parse_amount, _money_str
+from parsers import parse_chase_pdf
+from parsers import parse_givebacks_files
 
 
 # ── Tests for _parse_amount ───────────────────────────────────────────────────
@@ -36,9 +39,7 @@ def test_parse_amount_invalid():
 def test_parse_amount_with_quotes():
     assert _parse_amount('"$1,234.56"') == 1234.56
 
-
 # ── Tests for _money_str ──────────────────────────────────────────────────────
-
 def test_money_str_basic():
     assert _money_str(1234.56) == '$1,234.56'
 
@@ -192,3 +193,77 @@ def test_parse_quickbooks_wrong_month_raises():
     import pytest
     with pytest.raises(FileNotFoundError):
         parse_quickbooks_detail(FIXTURES, 'August', '2025')
+
+
+def test_parse_chase_pdf_balances():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    assert result['beginning_balance'] == 32630.10
+    assert result['ending_balance']    == 31190.76
+
+def test_parse_chase_pdf_period():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    assert 'July' in result['period']
+
+def test_parse_chase_pdf_checks():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    assert result['total_checks'] == 181.58
+    assert len(result['checks'])  == 1
+    assert result['checks'][0]['check_no'] == '1077'
+
+def test_parse_chase_pdf_withdrawals():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    assert result['total_withdrawals'] == 1257.76
+
+def test_parse_chase_pdf_no_deposits():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    assert result['total_deposits'] == 0.0
+    assert result['deposits']       == []
+
+def test_parse_chase_pdf_reconciliation():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    calc = (result['beginning_balance']
+            + result['total_deposits']
+            - result['total_checks']
+            - result['total_withdrawals']
+            - result['total_fees'])
+    assert abs(calc - result['ending_balance']) < 0.01
+
+def test_parse_chase_pdf_source_file():
+    result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
+    assert result['source_file'] == 'Chase_july_2025.pdf'
+
+def test_parse_chase_pdf_file_not_found():
+    import pytest
+    with pytest.raises(Exception):
+        parse_chase_pdf(Path('nonexistent.pdf'))
+
+def test_parse_givebacks_files_basic():
+    gb_file = FIXTURES / 'givebacks_july_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv'
+    file_info = [(gb_file, 'July 2025', 0)]
+    result = parse_givebacks_files(file_info)
+    assert len(result) > 0
+
+def test_parse_givebacks_files_total():
+    gb_file = FIXTURES / 'givebacks_july_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv'
+    file_info = [(gb_file, 'July 2025', 0)]
+    result = parse_givebacks_files(file_info)
+    total = sum(r['total'] for r in result)
+    assert total == 110.14  # $95.14 + $15.00
+
+def test_parse_givebacks_files_item_names():
+    gb_file = FIXTURES / 'givebacks_july_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv'
+    file_info = [(gb_file, 'July 2025', 0)]
+    result = parse_givebacks_files(file_info)
+    items = [r['item'] for r in result]
+    assert 'Shop to Give Donation' in items
+    assert 'Teacher/Staff' in items
+
+def test_parse_givebacks_files_source_file():
+    gb_file = FIXTURES / 'givebacks_july_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv'
+    file_info = [(gb_file, 'July 2025', 0)]
+    result = parse_givebacks_files(file_info)
+    assert all('givebacks_july_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv' in r['source_file'] for r in result)
+
+def test_parse_givebacks_empty_file_list():
+     with pytest.raises(ValueError, match='No Givebacks files provided'):
+        parse_givebacks_files([])

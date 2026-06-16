@@ -12,9 +12,6 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _read_csv_robust(path: Path) -> list:
     """
     Reads a CSV file trying multiple encodings.
@@ -474,3 +471,5 @@ def parse_chase_pdf(bank_file: Path) -> dict:
     print(f'  Withdrawals   : ${bank["total_withdrawals"]:,.2f}')
     print(f'  Fees          : ${bank["total_fees"]:,.2f}')
     return bank
+
+
