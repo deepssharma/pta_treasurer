@@ -499,7 +499,6 @@ def build_manifest(ws, month_folder, org_name, month_label,
 
 
 # ── 5. YTD SUMMARY ───────────────────────────────────────────────────────────
-
 def build_ytd_summary(ws, income_merged, expense_merged, org_name,
                       month_label, fiscal_idx, fiscal_months,
                       bank, balance_forward=0.0):
@@ -588,10 +587,31 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
             }
 
     # Add income-only items
+    # Special merged rows
+    MERGE_PAIRS = {
+        'membership expenses': {
+            'label':        'Membership Expenses/Income',
+            'income_keys':  ['single', 'family', 'donations', 'teachers', 'student'],
+            'expense_keys': ['membership expenses', 'council dues'],
+        },
+        'entertainment': {
+            'label':        'Basket Dinner',
+            'income_keys':  ['ticket & raffle sales', 'sponsors'],
+            'expense_keys': ['entertainment', 'raffles', 'venue'],
+        },
+    }
+    
+    all_merged_income_keys  = set()
+    all_merged_expense_keys = set()
+    for merge in MERGE_PAIRS.values():
+        all_merged_income_keys.update(merge['income_keys'])
+        all_merged_expense_keys.update(merge.get('expense_keys', []))
+    
     other_income = {}
+    
     for section, items in income_merged.items():
         for item, (last_yr_inc, inc_budget, inc_monthly) in items.items():
-            if item.lower() not in expense_lookup:
+            if item.lower() not in expense_lookup and item.lower() not in all_merged_income_keys:
                 other_income[item] = {
                     'last_yr_inc':  last_yr_inc,
                     'last_yr_exp':  0.0,
@@ -605,6 +625,11 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
 
     def money_or_none(val):
         return val if val and abs(val) > 0.001 else None
+
+    def money_or_dash(val):       # ← add this
+        if val is None or abs(val) < 0.001:
+            return '--'
+        return val
 
     def sec_hdr_ytd(label, r):
         ws.merge_cells(f'A{r}:I{r}')
@@ -633,35 +658,97 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
         return r + 1
 
     row = 6
+    row = col_hdrs_ytd(row)
+    
     for section_name, items in section_items.items():
         if not items:
             continue
 
         row = sec_hdr_ytd(section_name, row)
-        row = col_hdrs_ytd(row)
+        #row = col_hdrs_ytd(row)
 
         sec = defaultdict(float)
 
+        rendered_income_keys = set()  # track which income items were merged
+        rendered_expense_keys = set()
+        
         for i, (item, vals) in enumerate(items.items()):
-            if all(abs(v) < 0.001 for v in vals.values()):
+            item_lower = item.lower()
+
+            # Skip items already merged into another row
+            if (item_lower in all_merged_expense_keys and
+                    item_lower not in MERGE_PAIRS):
+                continue
+
+            if item_lower in MERGE_PAIRS:
+                merge = MERGE_PAIRS[item_lower]
+                
+                # Sum income
+                merged_inc_actual  = sum(
+                    sum(income_lookup[k][2][:fiscal_idx+1])
+                    for k in merge['income_keys'] if k in income_lookup)
+                merged_inc_last_yr = sum(
+                    income_lookup[k][0]
+                    for k in merge['income_keys'] if k in income_lookup)
+                merged_inc_budget  = sum(
+                    income_lookup[k][1]
+                    for k in merge['income_keys'] if k in income_lookup)
+
+                # Sum expenses
+                merged_exp_actual  = sum(
+                    sum(expense_lookup[k][2][:fiscal_idx+1])
+                    for k in merge.get('expense_keys', []) if k in expense_lookup)
+                merged_exp_last_yr = sum(
+                    expense_lookup[k][0]
+                    for k in merge.get('expense_keys', []) if k in expense_lookup)
+                merged_exp_budget  = sum(
+                    expense_lookup[k][1]
+                    for k in merge.get('expense_keys', []) if k in expense_lookup)
+
+                rendered_income_keys.update(merge['income_keys'])
+                rendered_expense_keys.update(merge.get('expense_keys', []))
+
+                display_vals = {
+                    'last_yr_inc':  merged_inc_last_yr,
+                    'last_yr_exp':  merged_exp_last_yr,
+                    'inc_budget':   merged_inc_budget,
+                    'exp_budget':   merged_exp_budget,
+                    'act_income':   merged_inc_actual,
+                    'act_expenses': merged_exp_actual,
+                }
+                display_label = merge['label']
+            else:
+                display_label = item
+                display_vals  = vals
+
+            has_data = (
+                abs(display_vals['last_yr_inc'])  > 0.001 or
+                abs(display_vals['last_yr_exp'])  > 0.001 or
+                abs(display_vals['inc_budget'])   > 0.001 or
+                abs(display_vals['exp_budget'])   > 0.001 or
+                abs(display_vals['act_income'])   > 0.001 or
+                abs(display_vals['act_expenses']) > 0.001
+            )
+            if not has_data:
                 continue
 
             fill = LGREY_FILL if i % 2 == 1 else PatternFill()
-            net      = vals['act_income'] - vals['act_expenses']
-            last_net = vals['last_yr_inc'] - vals['last_yr_exp']
+            net      = display_vals['act_income'] - display_vals['act_expenses']
+            last_net = display_vals['last_yr_inc'] - display_vals['last_yr_exp']
 
             row_vals = [
-                item,
-                money_or_none(vals['last_yr_inc']),
-                money_or_none(vals['last_yr_exp']),
-                money_or_none(vals['inc_budget']),
-                money_or_none(vals['exp_budget']),
-                money_or_none(vals['act_income']),
-                money_or_none(vals['act_expenses']),
-                money_or_none(net),
-                money_or_none(last_net),
+                display_label,
+                money_or_dash(display_vals['last_yr_inc']),
+                money_or_dash(display_vals['last_yr_exp']),
+                money_or_dash(display_vals['inc_budget']),
+                money_or_dash(display_vals['exp_budget']),
+                money_or_dash(display_vals['act_income']),
+                money_or_dash(display_vals['act_expenses']),
+                money_or_dash(net),
+                money_or_dash(last_net),
             ]
 
+            # ... rest of cell rendering stays the same
             for ci, val in enumerate(row_vals, 1):
                 c = ws.cell(row=row, column=ci, value=val)
                 c.font = BODY_FONT; c.fill = fill; c.border = THIN_BORDER
@@ -680,7 +767,7 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
 
             for k in ['last_yr_inc','last_yr_exp','inc_budget',
                       'exp_budget','act_income','act_expenses']:
-                sec[k] += vals[k]
+                sec[k] += display_vals[k]
             row += 1
 
         # Section total
@@ -695,14 +782,14 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
         ws.cell(row=row, column=1).alignment = Alignment(indent=1)
 
         for ci, val in enumerate([
-            money_or_none(sec['last_yr_inc']),
-            money_or_none(sec['last_yr_exp']),
-            money_or_none(sec['inc_budget']),
-            money_or_none(sec['exp_budget']),
-            money_or_none(sec['act_income']),
-            money_or_none(sec['act_expenses']),
-            money_or_none(sec_net),
-            money_or_none(sec_last_net),
+            money_or_dash(sec['last_yr_inc']),
+            money_or_dash(sec['last_yr_exp']),
+            money_or_dash(sec['inc_budget']),
+            money_or_dash(sec['exp_budget']),
+            money_or_dash(sec['act_income']),
+            money_or_dash(sec['act_expenses']),
+            money_or_dash(sec_net),
+            money_or_dash(sec_last_net),
         ], 2):
             c = ws.cell(row=row, column=ci, value=val)
             c.font = TOTAL_FONT; c.number_format = MONEY_FMT
