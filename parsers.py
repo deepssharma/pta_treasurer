@@ -145,7 +145,7 @@ def parse_quickbooks_detail(folder: Path, input_month: str = '',
 
     PARENT_KEYWORDS = {
         'fundraising-net', 'program-income', 'program expense',
-        'graduating class dues', 'admin/general', 'total',
+         'admin/general', 'total',
         'accrual basis',
     }
 
