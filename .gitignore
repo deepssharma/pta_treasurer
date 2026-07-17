@@ -3,6 +3,7 @@ input/
 output/
 data/
 files/
+logs/
 *.xlsx
 *.pdf
 *.csv
@@ -14,4 +15,14 @@ __pycache__/
 *.pyc
 tests/fixtures/*.pdf
 tests/fixtures/*.csv
+# ...except the pytest fixtures themselves, which are synthetic/anonymized sample data
+# (no real names, addresses, or account numbers) checked in on purpose.
+!tests/fixtures/*.pdf
+!tests/fixtures/*.csv
+
+# Synthetic demo dataset (sample_data/) - fake org, fake year, no real data.
+# Used by the demo-report skill so the workflow can be tried/shown without
+# touching real financial input/output, which stay untracked above.
+!sample_data/
+!sample_data/**
 .DS_Store
