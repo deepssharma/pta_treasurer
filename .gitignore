@@ -4,6 +4,10 @@ output/
 data/
 files/
 logs/
+# data/ and files/ (above) only match real directories, not symlinks - these
+# are symlinks to real data on this machine, so match them explicitly too.
+data
+files
 *.xlsx
 *.pdf
 *.csv
