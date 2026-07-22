@@ -123,8 +123,10 @@ running interactively.
 
 The repo ships a small **synthetic** demo dataset (`sample_data/July_1999/` —
 fake org, fake year, no real names or account numbers) so you can see the
-whole workflow run without touching real financial data. See
-`.claude/skills/generate-demo-report/SKILL.md` for the exact steps, or just:
+whole workflow run without touching real financial data, plus the expected
+output of running it (`sample_data/output/`) as a reference example and
+regression baseline. See `.claude/skills/generate-demo-report/SKILL.md` for
+the exact steps, or just:
 
 ```
 mkdir -p input/July_1999 && cp -r sample_data/July_1999/* input/July_1999/
