@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 import openpyxl
 from builders import (build_treasurer, build_budget, build_givebacks,
-                      build_manifest, FISCAL_MONTHS)
+                      build_manifest, build_credits_sheet, build_debits_sheet,
+                      build_memberhub_summary_sheet, FISCAL_MONTHS)
 
 
 # ── Mock data ─────────────────────────────────────────────────────────────────
@@ -160,3 +161,119 @@ def test_fiscal_months_order():
     assert FISCAL_MONTHS[5]  == 'DEC'
     assert FISCAL_MONTHS[6]  == 'JAN'
     assert FISCAL_MONTHS[11] == 'JUNE'
+
+
+# ── Debits & Credits (whole-fiscal-year ledger) tests ────────────────────────
+
+MOCK_CREDITS_BY_MONTH = [
+    ('July 2025', [
+        {'date': '07/17/2025', 'type': 'Deposit', 'check_no': '', 'payee': 'MemberHub',
+         'description': 'Deposit', 'category': 'Membership', 'amount': 110.14, 'is_income': True},
+    ]),
+    ('August 2025', [
+        {'date': '08/05/2025', 'type': 'Deposit', 'check_no': '', 'payee': 'MemberHub',
+         'description': 'Deposit', 'category': 'Book Fair', 'amount': 50.0, 'is_income': True},
+    ]),
+    ('September 2025', []),  # no credits that month - should be skipped, not error
+]
+
+MOCK_DEBITS_BY_MONTH = [
+    ('July 2025', [
+        {'date': '07/01/2025', 'type': 'Check', 'check_no': '1077', 'payee': 'Jane Doe',
+         'description': 'CHECK # 1077', 'category': 'Picnic', 'amount': 181.58, 'is_income': False},
+        {'date': '07/17/2025', 'type': 'Expense', 'check_no': '', 'payee': 'Quickbooks Online',
+         'description': 'Accounting', 'category': 'Accounting Expense (Quickbooks)',
+         'amount': 1257.76, 'is_income': False},
+    ]),
+]
+
+MOCK_GIVEBACKS_BY_MONTH = [
+    ('July 2025', [
+        {'item': 'Shop to Give Donation', 'category': '', 'count': 1, 'total': 95.14, 'source_file': 'x.csv'},
+        {'item': 'Teacher/Staff', 'category': 'Memberships', 'count': 1, 'total': 15.0, 'source_file': 'x.csv'},
+    ]),
+]
+
+MOCK_QB_TO_BUDGET_MAP = {'Membership': 'Membership Income', 'Picnic': 'Picnic Fund'}
+
+
+def _cell_values(ws):
+    return [row for row in ws.iter_rows(values_only=True) if any(v is not None for v in row)]
+
+
+def test_build_credits_sheet_running_total():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
+    rows = _cell_values(ws)
+    amounts = [r[5] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    assert amounts == [110.14, 160.14]  # cumulative across months
+
+
+def test_build_credits_sheet_skips_empty_month():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    month_bands = [r[0] for r in rows if r[0] in ('JULY', 'AUGUST', 'SEPTEMBER')]
+    assert month_bands == ['JULY', 'AUGUST']  # September (empty) skipped
+
+
+def test_build_credits_sheet_budget_line_mapping():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
+    rows = _cell_values(ws)
+    budget_lines = [r[4] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    assert budget_lines == ['Membership Income', 'Book Fair']  # mapped / falls back to raw category
+
+
+def test_build_credits_sheet_total_row():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    total_rows = [r for r in rows if r[0] == 'TOTAL CREDITS']
+    assert len(total_rows) == 1
+    assert total_rows[0][2] == 160.14
+
+
+def test_build_debits_sheet_running_total_and_notes_blank():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_debits_sheet(ws, MOCK_DEBITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
+    rows = _cell_values(ws)
+    data_rows = [r for r in rows if r[0] in ('1077', '')]
+    assert len(data_rows) == 2
+    assert data_rows[1][8] == 1439.34  # running total after both debits
+    for r in data_rows:
+        assert not r[7]  # NOTES column intentionally blank
+
+
+def test_build_debits_sheet_total_row():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_debits_sheet(ws, MOCK_DEBITS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    total_rows = [r for r in rows if r[0] == 'TOTAL DEBITS']
+    assert len(total_rows) == 1
+    assert total_rows[0][4] == 1439.34
+
+
+def test_build_memberhub_summary_statement_total_once_per_month():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    item_rows = [r for r in rows if r[0] in ('Shop to Give Donation', 'Teacher/Staff')]
+    assert item_rows[0][3] == 110.14   # statement total on first item row
+    assert item_rows[1][3] is None     # not repeated on subsequent rows
+
+
+def test_build_memberhub_summary_running_total():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    item_rows = [r for r in rows if r[0] in ('Shop to Give Donation', 'Teacher/Staff')]
+    assert [r[4] for r in item_rows] == [95.14, 110.14]

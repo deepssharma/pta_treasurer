@@ -797,3 +797,192 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
 
         ws.row_dimensions[row].height = 18
         row += 2
+
+
+# ── 6. DEBITS & CREDITS (WHOLE-FISCAL-YEAR LEDGER) ────────────────────────────
+# Shared helpers for wide (5-9 column), month-sectioned ledger sheets - a
+# different shape from the fixed-4-column helpers above (_sec_hdr/_data_row/
+# _total_row), so these get their own small helper set rather than forcing
+# those to fit.
+
+def _wide_hdr_row(ws, row, org_name, title, n_cols):
+    ws.merge_cells(f'A{row}:{get_column_letter(n_cols)}{row}')
+    c = ws[f'A{row}']
+    c.value = f'{org_name.upper()}  -  {title}'
+    c.font = Font(name='Arial', bold=True, size=13, color=WHITE)
+    c.fill = NAVY_FILL
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[row].height = 26
+    return row + 1
+
+
+def _wide_col_hdrs(ws, row, labels):
+    for i, lbl in enumerate(labels):
+        c = ws.cell(row=row, column=i + 1, value=lbl)
+        c.font = SUBHDR_FONT; c.fill = TEAL_FILL; c.border = THIN_BORDER
+        c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[row].height = 18
+    return row + 1
+
+
+def _month_band(ws, row, month_label, n_cols):
+    ws.merge_cells(f'A{row}:{get_column_letter(n_cols)}{row}')
+    c = ws[f'A{row}']
+    c.value = month_label.split()[0].upper()
+    c.font = Font(name='Arial', bold=True, size=10)
+    c.fill = GOLD_FILL
+    c.alignment = Alignment(horizontal='left', vertical='center', indent=1)
+    ws.row_dimensions[row].height = 16
+    return row + 1
+
+
+def _wide_data_row(ws, row, values, money_cols=()):
+    for i, val in enumerate(values):
+        c = ws.cell(row=row, column=i + 1, value=val)
+        c.font = BODY_FONT; c.border = THIN_BORDER
+        if i in money_cols:
+            c.number_format = MONEY_FMT
+            c.alignment = Alignment(horizontal='right')
+        elif i == 0:
+            c.alignment = Alignment(horizontal='left', indent=1)
+        else:
+            c.alignment = Alignment(horizontal='center')
+    ws.row_dimensions[row].height = 15
+    return row + 1
+
+
+def _wide_total_row(ws, row, n_cols, label, val, amount_col):
+    for i in range(n_cols):
+        c = ws.cell(row=row, column=i + 1)
+        c.fill = LTBLUE_FILL; c.border = MED_BORDER
+    ws.cell(row=row, column=1, value=label).font = TOTAL_FONT
+    ws.cell(row=row, column=1).alignment = Alignment(indent=1)
+    c = ws.cell(row=row, column=amount_col + 1, value=val)
+    c.font = TOTAL_FONT; c.number_format = MONEY_FMT
+    c.alignment = Alignment(horizontal='right')
+    ws.row_dimensions[row].height = 18
+    return row + 1
+
+
+def _sort_by_date(txns):
+    def key(t):
+        try:
+            return datetime.strptime(t['date'], '%m/%d/%Y')
+        except (ValueError, TypeError):
+            return datetime.min
+    return sorted(txns, key=key)
+
+
+def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
+    """
+    credits_by_month: list of (month_label, [transaction, ...]) in chronological
+    fiscal-year order. Each transaction is one dict from
+    parsers.parse_quickbooks_detail()['transactions'] where is_income is True.
+
+    Only auto-derivable columns are populated (date, category, amount, month,
+    mapped budget line, running total) - there's no Notes column here because
+    nothing in the parsed data maps to hand-written reconciliation notes.
+    """
+    qb_to_budget_map = qb_to_budget_map or {}
+    ws.sheet_view.showGridLines = False
+    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F'], [14, 30, 14, 10, 26, 16]):
+        ws.column_dimensions[col].width = w
+
+    row = _wide_hdr_row(ws, 1, org_name, 'Credits (Deposits) - Fiscal Year', 6)
+    row += 1
+    row = _wide_col_hdrs(row=row, ws=ws, labels=[
+        'DEPOSIT DATE', 'CATEGORY', '$ AMOUNT', 'MONTH', 'BUDGET LINE', 'RUNNING TOTAL'])
+
+    running = 0.0
+    for month_label, txns in credits_by_month:
+        if not txns:
+            continue
+        row = _month_band(ws, row, month_label, n_cols=6)
+        for t in _sort_by_date(txns):
+            running += t['amount']
+            budget_line = qb_to_budget_map.get(t['category'], t['category'])
+            row = _wide_data_row(ws, row, [
+                t['date'], t['category'], t['amount'],
+                month_label.split()[0], budget_line, running,
+            ], money_cols={2, 5})
+
+    row = _wide_total_row(ws, row, 6, 'TOTAL CREDITS', running, amount_col=2)
+    return row
+
+
+def build_debits_sheet(ws, debits_by_month, org_name, qb_to_budget_map=None):
+    """
+    debits_by_month: list of (month_label, [transaction, ...]) in chronological
+    fiscal-year order. Each transaction is one dict from
+    parsers.parse_quickbooks_detail()['transactions'] where is_income is False.
+
+    NOTES column is intentionally left blank - the source data has no field
+    for hand-written reconciliation notes (e.g. "check was signed late",
+    explanations for corrections); fill those in by hand after generating.
+    """
+    qb_to_budget_map = qb_to_budget_map or {}
+    ws.sheet_view.showGridLines = False
+    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+                       [10, 12, 22, 26, 12, 10, 22, 24]):
+        ws.column_dimensions[col].width = w
+
+    row = _wide_hdr_row(ws, 1, org_name, 'Debits (Checks/Expenses) - Fiscal Year', 8)
+    row += 1
+    row = _wide_col_hdrs(row=row, ws=ws, labels=[
+        'CHECK #', 'DATE', 'PAYEE', 'CATEGORY', '$ AMOUNT',
+        'MONTH', 'BUDGET LINE', 'NOTES'])
+    # Running total lives in a 9th column, added after NOTES so a blank
+    # Notes cell doesn't visually break the money column next to it.
+    ws.cell(row=row - 1, column=9, value='RUNNING TOTAL').font = SUBHDR_FONT
+    ws.cell(row=row - 1, column=9).fill = TEAL_FILL
+    ws.cell(row=row - 1, column=9).border = THIN_BORDER
+    ws.cell(row=row - 1, column=9).alignment = Alignment(horizontal='center', vertical='center')
+    ws.column_dimensions['I'].width = 16
+
+    running = 0.0
+    for month_label, txns in debits_by_month:
+        if not txns:
+            continue
+        row = _month_band(ws, row, month_label, n_cols=9)
+        for t in _sort_by_date(txns):
+            running += t['amount']
+            budget_line = qb_to_budget_map.get(t['category'], t['category'])
+            row = _wide_data_row(ws, row, [
+                t['check_no'], t['date'], t['payee'], t['category'], t['amount'],
+                month_label.split()[0], budget_line, '', running,
+            ], money_cols={4, 8})
+
+    row = _wide_total_row(ws, row, 9, 'TOTAL DEBITS', running, amount_col=4)
+    return row
+
+
+def build_memberhub_summary_sheet(ws, givebacks_by_month, org_name):
+    """
+    givebacks_by_month: list of (month_label, [item, ...]) in chronological
+    fiscal-year order. Each item is one dict from
+    parsers.parse_givebacks_files() (item, category, count, total, source_file).
+    """
+    ws.sheet_view.showGridLines = False
+    for col, w in zip(['A', 'B', 'C', 'D', 'E'], [28, 24, 14, 18, 16]):
+        ws.column_dimensions[col].width = w
+
+    row = _wide_hdr_row(ws, 1, org_name, 'MemberHub / Givebacks Summary - Fiscal Year', 5)
+    row += 1
+    row = _wide_col_hdrs(row=row, ws=ws, labels=[
+        'ITEM', 'CATEGORY', '$ AMOUNT', 'STATEMENT TOTAL', 'RUNNING TOTAL'])
+
+    running = 0.0
+    for month_label, items in givebacks_by_month:
+        if not items:
+            continue
+        row = _month_band(ws, row, month_label, n_cols=5)
+        statement_total = sum(it['total'] for it in items)
+        for i, it in enumerate(items):
+            running += it['total']
+            row = _wide_data_row(ws, row, [
+                it['item'], it['category'], it['total'],
+                statement_total if i == 0 else None, running,
+            ], money_cols={2, 3, 4})
+
+    row = _wide_total_row(ws, row, 5, 'TOTAL GIVEBACKS', running, amount_col=2)
+    return row
