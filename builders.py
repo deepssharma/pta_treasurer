@@ -92,7 +92,7 @@ def _total_row(ws, row, label, val):
 
 # ── 1. TREASURER REPORT ───────────────────────────────────────────────────────
 
-def build_treasurer(ws, qb, bank, month_label, org_name):
+def build_treasurer(ws, qb, bank, month_label, org_name, readthon=None):
     ws.sheet_view.showGridLines = False
     for col, w in zip(['A','B','C','D'], [32,18,18,22]):
         ws.column_dimensions[col].width = w
@@ -157,6 +157,7 @@ def build_treasurer(ws, qb, bank, month_label, org_name):
         ('(-) Fees',                    -bank['total_fees']),
     ]):
         _data_row(ws, row, lbl, amt, shade=(i % 2 == 1)); row += 1
+    ending_bal_row = row
     _total_row(ws, row, 'Ending Balance (per statement)',
                bank['ending_balance']); row += 1
 
@@ -181,6 +182,41 @@ def build_treasurer(ws, qb, bank, month_label, org_name):
         ws[f'B{row}'].alignment = Alignment(horizontal='right')
         ws.row_dimensions[row].height = 16; row += 1
     row += 1
+
+    if readthon is not None:
+        row = _sec_hdr(ws, 'READTHON (Pass-Through Funds Held for School)', row)
+        row = _col_hdrs(ws, row, ['Description', 'Amount', '', ''])
+        _data_row(ws, row, '(+) READTHON Deposits This Month',
+                  readthon['income_total']); row += 1
+        _data_row(ws, row, '(-) READTHON Payouts This Month',
+                  -readthon['expense_total'], shade=True); row += 1
+        readthon_bal_row = row
+        _total_row(ws, row, 'READTHON Balance Held in Account (Cumulative)',
+                   readthon['balance_held']); row += 2
+
+        ws.merge_cells(f'A{row}:D{row}')
+        ws[f'A{row}'].value = 'TOTAL MONEY IN ACCOUNT / PTA MONEY'
+        ws[f'A{row}'].font = Font(name='Arial', bold=True, size=11, color=WHITE)
+        ws[f'A{row}'].fill = NAVY_FILL
+        ws[f'A{row}'].alignment = Alignment(horizontal='left', indent=1)
+        row += 1
+
+        pta_money_val = bank['ending_balance'] - readthon['balance_held']
+        for lbl, formula, fill in [
+            ('Total Money in Account', f'=B{ending_bal_row}', GOLD_FILL),
+            ('PTA Money', f'=B{ending_bal_row}-B{readthon_bal_row}',
+             RED_FILL if pta_money_val < 0 else GOLD_FILL),
+        ]:
+            for col in ['A','B','C','D']:
+                ws[f'{col}{row}'].fill = fill
+                ws[f'{col}{row}'].border = MED_BORDER
+            ws[f'A{row}'].value = lbl; ws[f'A{row}'].font = TOTAL_FONT
+            ws[f'A{row}'].alignment = Alignment(indent=1)
+            ws[f'B{row}'].value = formula; ws[f'B{row}'].font = TOTAL_FONT
+            ws[f'B{row}'].number_format = MONEY_FMT
+            ws[f'B{row}'].alignment = Alignment(horizontal='right')
+            row += 1
+        row += 1
 
     if bank['daily_balances']:
         row = _sec_hdr(ws, 'DAILY ENDING BALANCES', row)

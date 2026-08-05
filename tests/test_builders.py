@@ -10,7 +10,8 @@ import pytest
 import openpyxl
 from builders import (build_treasurer, build_budget, build_givebacks,
                       build_manifest, build_credits_sheet, build_debits_sheet,
-                      build_memberhub_summary_sheet, FISCAL_MONTHS)
+                      build_memberhub_summary_sheet, FISCAL_MONTHS,
+                      GOLD_FILL, RED_FILL)
 
 
 # ── Mock data ─────────────────────────────────────────────────────────────────
@@ -48,6 +49,13 @@ MOCK_GIVEBACKS = [
     {'item': 'Teacher/Staff', 'category': 'Memberships',
      'count': 1, 'total': 15.0,  'source_file': 'givebacks_july.csv'},
 ]
+
+MOCK_READTHON = {
+    'income_total':  500.0,
+    'expense_total': 300.0,
+    'net':           200.0,
+    'balance_held':  850.0,
+}
 
 
 # ── Treasurer Report tests ────────────────────────────────────────────────────
@@ -88,6 +96,69 @@ def test_build_treasurer_difference_is_zero():
             found = True
             break
     assert found, 'Difference row not found'
+
+
+# ── READTHON section tests ────────────────────────────────────────────────────
+
+def test_build_treasurer_without_readthon_no_section():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_treasurer(ws, MOCK_QRB, MOCK_BANK, 'July 2025', 'Setauket School PTA')
+    labels = {row[0] for row in ws.iter_rows(values_only=True)}
+    assert 'Total Money in Account' not in labels
+    assert 'PTA Money' not in labels
+
+def test_build_treasurer_readthon_section_present():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_treasurer(ws, MOCK_QRB, MOCK_BANK, 'July 2025', 'Setauket School PTA',
+                    readthon=MOCK_READTHON)
+    labels = {row[0] for row in ws.iter_rows(values_only=True)}
+    for expected in ['(+) READTHON Deposits This Month',
+                      '(-) READTHON Payouts This Month',
+                      'READTHON Balance Held in Account (Cumulative)',
+                      'Total Money in Account',
+                      'PTA Money']:
+        assert expected in labels, f'{expected!r} not found'
+
+def test_build_treasurer_readthon_values():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_treasurer(ws, MOCK_QRB, MOCK_BANK, 'July 2025', 'Setauket School PTA',
+                    readthon=MOCK_READTHON)
+    values = {row[0]: row[1] for row in ws.iter_rows(values_only=True)}
+    assert values['(+) READTHON Deposits This Month'] == 500.0
+    assert values['(-) READTHON Payouts This Month']  == -300.0
+    assert values['READTHON Balance Held in Account (Cumulative)'] == 850.0
+
+def test_build_treasurer_pta_money_formula():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_treasurer(ws, MOCK_QRB, MOCK_BANK, 'July 2025', 'Setauket School PTA',
+                    readthon=MOCK_READTHON)
+    pta_cell = None
+    for row_cells in ws.iter_rows():
+        if row_cells[0].value == 'PTA Money':
+            pta_cell = row_cells[1]
+            break
+    assert pta_cell is not None, 'PTA Money row not found'
+    assert isinstance(pta_cell.value, str) and pta_cell.value.startswith('=B')
+    assert pta_cell.value.count('-B') == 1
+
+def test_build_treasurer_pta_money_negative_flags_red():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    large_balance_readthon = {**MOCK_READTHON, 'balance_held': 99999.0}  # > ending_balance
+    build_treasurer(ws, MOCK_QRB, MOCK_BANK, 'July 2025', 'Setauket School PTA',
+                    readthon=large_balance_readthon)
+    pta_cell = None
+    for row_cells in ws.iter_rows():
+        if row_cells[0].value == 'PTA Money':
+            pta_cell = row_cells[1]
+            break
+    assert pta_cell is not None, 'PTA Money row not found'
+    assert pta_cell.fill == RED_FILL
+    assert pta_cell.fill != GOLD_FILL
 
 
 # ── Budget sheet tests ────────────────────────────────────────────────────────

@@ -195,6 +195,69 @@ def test_parse_quickbooks_wrong_month_raises():
         parse_quickbooks_detail(FIXTURES, 'August', '2025')
 
 
+# ── Tests for READTHON pass-through handling ──────────────────────────────────
+
+def test_parse_quickbooks_no_readthon_defaults_to_zero():
+    result = parse_quickbooks_detail(FIXTURES, 'July', '2025')
+    assert result['readthon_income_total']  == 0.0
+    assert result['readthon_expense_total'] == 0.0
+    assert result['readthon_net']           == 0.0
+
+def test_parse_quickbooks_readthon_excluded_from_income_expenses(sample_qb_csv_with_readthon):
+    result = parse_quickbooks_detail(sample_qb_csv_with_readthon.parent, 'July', '2025')
+    assert 'Readthon' not in result['income']
+    assert 'Readthon' not in result['expenses']
+    # Unaffected by the readthon rows - only the "Accounting Expense (Quickbooks)"
+    # category section counts; the "Checking (4346)" section's own transaction
+    # listing is always skipped by design (same as with no READTHON present)
+    assert result['income_total']  == 0.0
+    assert result['expense_total'] == 1257.76
+
+def test_parse_quickbooks_readthon_totals(sample_qb_csv_with_readthon):
+    result = parse_quickbooks_detail(sample_qb_csv_with_readthon.parent, 'July', '2025')
+    assert result['readthon_income_total']  == 500.0
+    assert result['readthon_expense_total'] == 300.0
+    assert result['readthon_net']           == 200.0
+
+def test_parse_quickbooks_readthon_transactions_flagged(sample_qb_csv_with_readthon):
+    result = parse_quickbooks_detail(sample_qb_csv_with_readthon.parent, 'July', '2025')
+    assert all('is_readthon' in t for t in result['transactions'])
+    readthon_txns = [t for t in result['transactions'] if t['is_readthon']]
+    other_txns    = [t for t in result['transactions'] if not t['is_readthon']]
+    assert len(readthon_txns) == 2
+    # Only the "Accounting Expense (Quickbooks)" row - the "Checking (4346)"
+    # section's own listing is always skipped by design
+    assert len(other_txns)    == 1
+
+def test_parse_quickbooks_readthon_expenses_variant(tmp_path):
+    """QuickBooks splits this fund's deposits/payouts into separately named
+    sections in real exports - 'Readthon-Expenses' must be caught too, not
+    just the exact 'Readthon' section name."""
+    content = '''Setauket School PTA
+Transaction Detail by Account
+May 1-31, 2026
+,,,,,,,,
+,,Transaction date,Transaction type,Num,Name,Description,Split,Amount
+Readthon,,,,,,,,
+,,05/05/2026,Deposit,,Family B,Readathon pledge,Checking,400.00
+Total for Readthon,,,,,,,,
+Readthon-Expenses,,,,,,,,
+,,05/15/2026,Check,3001,Middle School,Readathon payout,Checking,-250.00
+Total for Readthon-Expenses,,,,,,,,
+'''
+    f = tmp_path / 'quickbooks_may_2026.csv'
+    f.write_text(content, encoding='utf-8')
+    result = parse_quickbooks_detail(tmp_path, 'May', '2026')
+    assert 'Readthon' not in result['income']
+    assert 'Readthon-Expenses' not in result['expenses']
+    assert result['income_total']           == 0.0
+    assert result['expense_total']          == 0.0
+    assert result['readthon_income_total']  == 400.0
+    assert result['readthon_expense_total'] == 250.0
+    assert result['readthon_net']           == 150.0
+    assert all(t['is_readthon'] for t in result['transactions'])
+
+
 def test_parse_chase_pdf_balances():
     result = parse_chase_pdf(FIXTURES / 'Chase_july_2025.pdf')
     assert result['beginning_balance'] == 32630.10

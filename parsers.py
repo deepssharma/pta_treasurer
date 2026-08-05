@@ -53,6 +53,16 @@ def _money_str(val) -> str:
 
 # ── 1. PARSE QUICKBOOKS TRANSACTION DETAIL ────────────────────────────────────
 
+# QuickBooks category-section names treated as READTHON pass-through funds.
+# QuickBooks splits this fundraiser's deposits and payouts into separately
+# named sections rather than one shared category - both are pass-through
+# money for the school, neither counts as PTA income/expenses. An explicit
+# set (not a loose "starts with READTHON" prefix match) so a genuinely
+# unrelated category that happens to start with the word still gets caught
+# by the near-miss warning below instead of being silently swept in.
+READTHON_CATEGORIES = {'READTHON', 'READTHON-EXPENSES'}
+
+
 def parse_quickbooks_detail(folder: Path, input_month: str = '',
                              fiscal_year: str = '') -> dict:
     """
@@ -65,7 +75,13 @@ def parse_quickbooks_detail(folder: Path, input_month: str = '',
     
     Returns dict with keys:
         period, income, income_total, expenses, expense_total,
-        net_income, transactions
+        net_income, readthon_income_total, readthon_expense_total,
+        readthon_net, transactions
+
+    READTHON: transactions under a category section matching READTHON_CATEGORIES
+    (case-insensitive) are pass-through funds held for the school, not PTA
+    money — they're excluded from income/expenses/net_income entirely and
+    tracked separately via the readthon_* totals instead.
     """
     # Find matching file
     all_csv = sorted(folder.glob('*.csv'))
@@ -97,13 +113,16 @@ def parse_quickbooks_detail(folder: Path, input_month: str = '',
     print(f'  Encoding  : {encoding}')
 
     data = {
-        'period':        '',
-        'income':        {},
-        'income_total':  0.0,
-        'expenses':      {},
-        'expense_total': 0.0,
-        'net_income':    0.0,
-        'transactions':  [],
+        'period':                  '',
+        'income':                  {},
+        'income_total':            0.0,
+        'expenses':                {},
+        'expense_total':           0.0,
+        'net_income':              0.0,
+        'readthon_income_total':   0.0,
+        'readthon_expense_total':  0.0,
+        'readthon_net':            0.0,
+        'transactions':            [],
     }
 
     # Period from line 3
@@ -212,8 +231,14 @@ def parse_quickbooks_detail(folder: Path, input_month: str = '',
             clean_desc = desc_val
 
         # Classify by transaction type
-        is_deposit = type_val.lower() == 'deposit'
-        is_expense = type_val.lower() in ('check', 'expense', 'bill payment', 'bill')
+        is_deposit  = type_val.lower() == 'deposit'
+        is_expense  = type_val.lower() in ('check', 'expense', 'bill payment', 'bill')
+        is_readthon = current_category.strip().upper() in READTHON_CATEGORIES
+
+        if 'readthon' in current_category.lower() and not is_readthon:
+            print(f'  WARNING: category "{current_category}" looks READTHON-like '
+                  f'but is not in READTHON_CATEGORIES {READTHON_CATEGORIES} '
+                  f'— check QuickBooks naming or add it if this is a new variant')
 
         transaction = {
             'date':        date_val,
@@ -224,23 +249,35 @@ def parse_quickbooks_detail(folder: Path, input_month: str = '',
             'category':    current_category,
             'amount':      abs(amount),
             'is_income':   is_deposit,
+            'is_readthon': is_readthon,
         }
         data['transactions'].append(transaction)
 
-        if is_deposit:
+        if is_readthon:
+            if is_deposit:
+                data['readthon_income_total'] += abs(amount)
+            elif is_expense:
+                data['readthon_expense_total'] += abs(amount)
+        elif is_deposit:
             data['income'][current_category] = (
                 data['income'].get(current_category, 0.0) + abs(amount))
         elif is_expense:
             data['expenses'][current_category] = (
                 data['expenses'].get(current_category, 0.0) + abs(amount))
 
-    data['income_total']  = sum(data['income'].values())
-    data['expense_total'] = sum(data['expenses'].values())
-    data['net_income']    = data['income_total'] - data['expense_total']
+    data['income_total']    = sum(data['income'].values())
+    data['expense_total']   = sum(data['expenses'].values())
+    data['net_income']      = data['income_total'] - data['expense_total']
+    data['readthon_net']    = (data['readthon_income_total']
+                                - data['readthon_expense_total'])
 
     print(f'  Period    : {data["period"]}')
     print(f'  Income    : ${data["income_total"]:,.2f}  ({len(data["income"])} categories)')
     print(f'  Expenses  : ${data["expense_total"]:,.2f}  ({len(data["expenses"])} categories)')
+    if data['readthon_income_total'] or data['readthon_expense_total']:
+        print(f'  READTHON  : +${data["readthon_income_total"]:,.2f} '
+              f'-${data["readthon_expense_total"]:,.2f} '
+              f'(net ${data["readthon_net"]:,.2f})')
     print(f'  Transactions: {len(data["transactions"])}')
     return data
 

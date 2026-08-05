@@ -60,7 +60,15 @@ worksheets into the two output workbooks).
 **`parsers.py`** — one function per input file type, each returns plain
 dicts/lists with no Excel or org-specific knowledge:
 - `parse_quickbooks_detail(folder, month, year)` → transactions, each tagged
-  `is_income` (used downstream to split into credits/debits)
+  `is_income` (used downstream to split into credits/debits). Transactions
+  under a category section matching `READTHON_CATEGORIES` (currently
+  `READTHON`/`READTHON-EXPENSES` — QuickBooks splits this fundraiser's
+  deposits and payouts into separately named sections) are pass-through
+  funds held for the school, not PTA money — they're tagged
+  `is_readthon` and excluded from `income`/`expenses`/`net_income` entirely,
+  tracked instead via `readthon_income_total`/`readthon_expense_total`/
+  `readthon_net`. This keeps them out of Budget vs Actuals and YTD Summary
+  automatically, since those are built from `income`/`expenses`.
 - `parse_givebacks_files(file_info_list)` — merges multiple payout CSVs by item
 - `parse_chase_pdf(bank_file)` — bank statement for reconciliation
 
@@ -77,7 +85,12 @@ different shapes:
 
 **Two output workbooks per run:**
 1. `output/Treasurer_Report_{Month}_{Year}.xlsx` (Cell 9) — one month's report:
-   Treasurer Report (with bank reconciliation), Income/Expense Budget vs
+   Treasurer Report (with bank reconciliation, then a READTHON pass-through
+   section showing this month's READTHON activity and the cumulative balance
+   still held in the account — see `READTHON_BALANCE_FORWARD`/
+   `compute_readthon_balance_held()` in Cell 5 — ending in two rows: "Total
+   Money in Account" matching the Chase ending balance, and "PTA Money"
+   which subtracts the READTHON balance held), Income/Expense Budget vs
    Actuals, Giveback Reconciliation, File Manifest, YTD Summary (accumulates
    across all months processed so far via `data/history/`).
 2. `output/Debits_and_Credits_{fy_start}_to_{fy_end}.xlsx` (Cell 12) — rebuilt
