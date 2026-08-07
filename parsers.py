@@ -713,41 +713,59 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
                      one per Givebacks CSV file for this month (parsed
                      individually, not merged - see parse_givebacks_files)
 
-    A payout's QuickBooks entries usually land on one date, but occasionally
-    QuickBooks records a single payout's category split across a couple of
-    *different* dates - so unmatched payouts get a second pass that tries
-    summing combinations of remaining date-groups (up to 5 at a time; a
-    payout split across more dates than that is vanishingly unlikely and not
-    worth the combinatorial cost). A combination only counts if it's the
-    *unique* one that sums to the payout's total - if two different
-    combinations both work, that's genuinely ambiguous and the payout is
-    left unmatched rather than guessed at.
+    A payout's QuickBooks entries usually land on one date, but two other
+    cases show up in real data:
+    - a date mixes a payout's entries with OTHER, unrelated income entered
+      the same day (e.g. a $420 payout's 5 entries sharing 10/03 with two
+      unrelated $170 entries from something else) - the whole-date total
+      then doesn't match anything, even though the payout's own entries are
+      right there. Phase 1b looks for a subset of one date's entries that
+      matches, leaving the rest of that date as-is.
+    - a payout's entries are split across a couple of *different* dates -
+      Phase 2 tries summing combinations of remaining whole date-groups (up
+      to 5 at a time; a payout split across more dates than that is
+      vanishingly unlikely and not worth the combinatorial cost).
+    Every phase only accepts a match that's *unique* - if two different
+    subsets/combinations both work, that's genuinely ambiguous and the
+    payout is left unmatched rather than guessed at. A payout that matches
+    nothing anywhere most commonly means it simply isn't recorded in
+    QuickBooks at all yet (confirmed against real data: a payout matching a
+    real bank withdrawal with no QuickBooks counterpart on that date) - no
+    amount of matching logic can fix a transaction that was never entered.
 
     Returns:
         (consolidated_credits, payout_dates)
-        consolidated_credits: credit_txns with matched date-groups replaced
-            by one consolidated row each; any date-group that didn't match a
-            payout (individually or in combination) passes through
-            unchanged, transaction by transaction
+        consolidated_credits: credit_txns with matched entries replaced by
+            one consolidated row per payout; any entries that never matched
+            a payout (individually, as part of a within-date subset, or in
+            cross-date combination) pass through unchanged
         payout_dates: {payout_index: date_str_or_None} - None means no
-            matching date-group (or unambiguous combination) was found for
-            that payout (render as unreconciled in MemberHub_Summary, don't
-            drop it) - most commonly because the payout simply isn't
-            recorded in QuickBooks this month at all, which no amount of
-            matching logic can fix
+            match was found anywhere for that payout (render as
+            unreconciled in MemberHub_Summary, don't drop it)
     """
     by_date = {}
     for t in credit_txns:
         by_date.setdefault(t['date'], []).append(t)
 
-    date_group_sums = {date: round(sum(t['amount'] for t in group), 2)
-                       for date, group in by_date.items()}
-    used_dates = set()
+    # Mutable "what's left to match" per date - phases remove entries as
+    # they consume them, so later phases only ever see what's still
+    # unclaimed (e.g. Phase 1b can claim 5 of a date's 7 entries and leave
+    # the other 2 available for a different match).
+    remaining = {date: list(group) for date, group in by_date.items()}
     payout_dates = {}
     consolidated_rows = []
 
-    def add_consolidated_row(dates, total):
-        combined_txns = [t for d in dates for t in by_date[d]]
+    def add_consolidated_row(date, txns, total):
+        consolidated_rows.append({
+            'date':                 date,
+            'category':             'MemberHub/Givebacks Deposit',
+            'amount':               total,
+            'is_income':            True,
+            'bank_statement_month': txns[0].get('bank_statement_month'),
+        })
+
+    def add_consolidated_row_multi(dates, total):
+        combined_txns = [t for d in dates for t in remaining[d]]
         earliest = min(dates, key=lambda d: datetime.strptime(d, '%m/%d/%Y'))
         consolidated_rows.append({
             'date':                 earliest,
@@ -758,33 +776,76 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
         })
         return earliest
 
-    # Phase 1: exact single-date match.
-    unmatched_payouts = []
+    # Phase 1: exact whole-date match.
+    unmatched = []
     for i, payout in enumerate(payouts):
         payout_total = round(payout['total'], 2)
         matched_date = None
-        for date, group_sum in date_group_sums.items():
-            if date in used_dates:
+        for date, txns in remaining.items():
+            if not txns:
                 continue
-            if abs(group_sum - payout_total) < 0.01:
+            if abs(round(sum(t['amount'] for t in txns), 2) - payout_total) < 0.01:
                 matched_date = date
-                used_dates.add(date)
                 break
         if matched_date:
-            payout_dates[i] = add_consolidated_row([matched_date], date_group_sums[matched_date])
+            add_consolidated_row(matched_date, remaining[matched_date], payout_total)
+            payout_dates[i] = matched_date
+            remaining[matched_date] = []
         else:
             payout_dates[i] = None
-            unmatched_payouts.append(i)
+            unmatched.append(i)
+
+    # Phase 1b: within-date subset match - a payout's own entries mixed in
+    # with other, unrelated income on the same date. Capped at 12 remaining
+    # entries per date to keep the subset search (2^n) cheap; a date with
+    # more than that is rare enough not to be worth the combinatorial cost.
+    still_unmatched = []
+    for i in unmatched:
+        payout_total = round(payouts[i]['total'], 2)
+        found = None
+        ambiguous = False
+        for date, txns in remaining.items():
+            n = len(txns)
+            if n < 2 or n > 12:
+                continue
+            amounts = [t['amount'] for t in txns]
+            local_matches = []
+            for r in range(1, n):
+                for combo in combinations(range(n), r):
+                    if abs(round(sum(amounts[j] for j in combo), 2) - payout_total) < 0.01:
+                        local_matches.append(combo)
+                        if len(local_matches) > 1:
+                            break
+                if len(local_matches) > 1:
+                    break
+            if len(local_matches) == 1:
+                if found is not None:
+                    ambiguous = True
+                    break
+                found = (date, local_matches[0])
+            elif len(local_matches) > 1:
+                ambiguous = True
+                break
+        if found and not ambiguous:
+            date, idxs = found
+            idx_set = set(idxs)
+            subset_txns = [t for j, t in enumerate(remaining[date]) if j in idx_set]
+            add_consolidated_row(date, subset_txns, payout_total)
+            payout_dates[i] = date
+            remaining[date] = [t for j, t in enumerate(remaining[date]) if j not in idx_set]
+        else:
+            still_unmatched.append(i)
 
     # Phase 2: cross-date combination match for whatever's still unmatched
     # (a single payout whose QuickBooks entries landed on different dates).
-    for i in unmatched_payouts:
+    for i in still_unmatched:
         payout_total = round(payouts[i]['total'], 2)
-        available = [d for d in date_group_sums if d not in used_dates]
+        available = [d for d, txns in remaining.items() if txns]
+        date_sums = {d: round(sum(t['amount'] for t in remaining[d]), 2) for d in available}
         matches = []
         for r in range(2, min(len(available), 5) + 1):
             for combo in combinations(available, r):
-                if abs(round(sum(date_group_sums[d] for d in combo), 2) - payout_total) < 0.01:
+                if abs(round(sum(date_sums[d] for d in combo), 2) - payout_total) < 0.01:
                     matches.append(combo)
                     if len(matches) > 1:
                         break
@@ -792,15 +853,15 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
                 break
         if len(matches) == 1:
             combo = matches[0]
-            used_dates.update(combo)
-            payout_dates[i] = add_consolidated_row(list(combo), payout_total)
+            payout_dates[i] = add_consolidated_row_multi(list(combo), payout_total)
+            for d in combo:
+                remaining[d] = []
 
-    # Date-groups that never matched a payout (individually or in
-    # combination) pass through unchanged - safe fallback, still visible,
-    # just not consolidated.
-    for date, group in by_date.items():
-        if date not in used_dates:
-            consolidated_rows.extend(group)
+    # Entries that never matched a payout (individually, as a within-date
+    # subset, or in cross-date combination) pass through unchanged - safe
+    # fallback, still visible, just not consolidated.
+    for date, txns in remaining.items():
+        consolidated_rows.extend(txns)
 
     return consolidated_rows, payout_dates
 

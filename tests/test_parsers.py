@@ -626,6 +626,54 @@ def test_consolidate_givebacks_payouts_ambiguous_combination_stays_unmatched():
     # nothing consolidated - all 4 original transactions pass through unchanged
     assert len(result) == 4
 
+def test_consolidate_givebacks_payouts_within_date_subset_match():
+    # Real scenario (October 2025): a payout's own entries share a date with
+    # OTHER, unrelated income also entered that day, so the whole-date total
+    # doesn't match - only a subset of that date's entries does.
+    credits = [
+        _gb_txn('10/03/2025', 100.0, description='Graduating Class Dues', category='Graduating Class Dues'),
+        _gb_txn('10/03/2025', 60.0,  description='Standard', category='Standard'),
+        _gb_txn('10/03/2025', 5.0,   description='Student', category='Student'),
+        _gb_txn('10/03/2025', 60.0,  description='Teacher/Staff', category='Teachers'),
+        _gb_txn('10/03/2025', 195.0, description='Birthday Books-Income', category='Birthday Books-Income'),
+        _gb_txn('10/03/2025', 170.0, description='Grades 2-3', category='Fast Athletics'),   # unrelated
+        _gb_txn('10/03/2025', 170.0, description='Trunk or Treat', category='Trunk or Treat'),  # unrelated
+    ]
+    payouts = [{'total': 420.0, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates[0] == '10/03/2025'
+    consolidated = [r for r in result if r.get('category') == 'MemberHub/Givebacks Deposit']
+    assert len(consolidated) == 1
+    assert consolidated[0]['amount'] == 420.0
+    # the two unrelated entries pass through untouched, not swept in
+    leftover = sorted(r['amount'] for r in result if r is not consolidated[0])
+    assert leftover == [170.0, 170.0]
+
+def test_consolidate_givebacks_payouts_within_date_subset_ambiguous_stays_unmatched():
+    # Two different subsets of the same date both sum to 50.0 - genuinely
+    # ambiguous, must not guess.
+    credits = [
+        _gb_txn('10/03/2025', 10.0),
+        _gb_txn('10/03/2025', 40.0),
+        _gb_txn('10/03/2025', 20.0),
+        _gb_txn('10/03/2025', 30.0),
+        _gb_txn('10/03/2025', 900.0),  # padding so the whole-date total doesn't also match
+    ]
+    payouts = [{'total': 50.0, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates[0] is None
+    assert len(result) == 5
+
+def test_consolidate_givebacks_payouts_no_qb_entry_at_all_stays_unmatched():
+    # Real scenario (October 2025): a Givebacks payout/reversal with no
+    # corresponding QuickBooks entry anywhere that month - matching logic
+    # can't invent a transaction that was never entered.
+    credits = [_gb_txn('10/14/2025', 45.0), _gb_txn('10/14/2025', 15.0)]
+    payouts = [{'total': -255.0, 'items': [], 'source_file': 'reversal.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates[0] is None
+    assert len(result) == 2
+
 
 # ── Tests for extract_payout_id ───────────────────────────────────────────────
 from parsers import extract_payout_id
