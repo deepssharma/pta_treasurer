@@ -550,16 +550,35 @@ def test_consolidate_givebacks_payouts_unmatched_payout_keeps_none():
     assert len(result) == 1
     assert result[0]['amount'] == 50.0
 
-def test_consolidate_givebacks_payouts_non_givebacks_untouched():
+def test_consolidate_givebacks_payouts_matches_regardless_of_description():
+    # Real payouts split across QuickBooks category lines that DON'T carry
+    # the 'MemberHub/Givebacks Deposit' description tag (e.g. membership
+    # dues categories) - matching is by date-group total, not description,
+    # so these must still consolidate.
+    credits = [
+        {'date': '07/05/2025', 'amount': 150.0, 'is_income': True,
+         'description': 'Family', 'category': 'Family',
+         'bank_statement_month': 'July 2025'},
+        {'date': '07/05/2025', 'amount': 50.0, 'is_income': True,
+         'description': 'MemberHub/Givebacks Deposit', 'category': 'Membership',
+         'bank_statement_month': 'July 2025'},
+    ]
+    payouts = [{'total': 200.0, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates == {0: '07/05/2025'}
+    assert len(result) == 1
+    assert result[0]['amount'] == 200.0
+    assert result[0]['category'] == 'MemberHub/Givebacks Deposit'
+
+def test_consolidate_givebacks_payouts_no_matching_payout_untouched():
     credits = [
         {'date': '07/05/2025', 'amount': 200.0, 'is_income': True,
          'description': 'Some Other Deposit', 'category': 'Sponsors',
          'bank_statement_month': 'July 2025'},
     ]
-    payouts = [{'total': 200.0, 'items': [], 'source_file': 'p1.csv'}]
+    payouts = [{'total': 999.99, 'items': [], 'source_file': 'p1.csv'}]
     result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
-    # non-Givebacks transaction never consolidates, even though the amount
-    # coincidentally matches a payout total
+    # doesn't match this payout's total, so it's left exactly as-is
     assert payout_dates == {0: None}
     assert len(result) == 1
     assert result[0]['description'] == 'Some Other Deposit'

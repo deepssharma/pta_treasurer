@@ -686,14 +686,24 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
     several income-category line items - Credits should show one row per
     actual payout, not one row per QuickBooks category split.
 
-    Only transactions QuickBooks itself already tagged as Givebacks-sourced
-    are ever touched: parse_quickbooks_detail sets description to exactly
-    'MemberHub/Givebacks Deposit' whenever the raw description contains
-    'ORIG CO NAME' or 'GB Payout'. This is a more precise signal than
-    category name (which varies - 'Misc MemberHub Income', 'Membership',
-    'Family Membership' all appear for genuinely Givebacks-sourced rows) and
-    means a non-Givebacks transaction can never accidentally get swept in,
-    even if it happens to share a date with a real payout.
+    Matching is by date-group total, not description or category: a real
+    payout's QuickBooks entries almost always land on one date, but only a
+    fraction of them carry the description parse_quickbooks_detail tags
+    'MemberHub/Givebacks Deposit' (raw description containing 'ORIG CO NAME'
+    or 'GB Payout') - the rest of that same payout shows up as ordinary
+    membership-dues category lines ('Family', 'Grades 2-3', 'Standard', ...)
+    with other descriptions. Pre-filtering to the tagged description alone
+    (an earlier version of this function did) excludes most of a payout's
+    real entries, so the date-group total almost never equals the payout
+    total and consolidation silently fails - confirmed against real data,
+    where every payout's full-day credit total matched its payout total to
+    the cent, but the tagged-only subtotal did not. So every credit
+    transaction on a date is a match candidate; the exact-to-the-cent total
+    match against a specific real payout amount is itself precise enough to
+    rule out a coincidental sweep-in of unrelated same-day income - an
+    unrelated deposit landing on the same day only gets consolidated if it
+    happens to make the day's total equal a real payout's total, which practice
+    (not just theory) never showed happening.
 
     Args:
         credit_txns: this month's credit transactions - must already have
@@ -715,10 +725,10 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
 
     Returns:
         (consolidated_credits, payout_dates)
-        consolidated_credits: credit_txns with matched Givebacks groups
-            replaced by one consolidated row each; everything else
-            (non-Givebacks transactions, and any Givebacks-tagged date-group
-            that didn't match a payout) passes through unchanged
+        consolidated_credits: credit_txns with matched date-groups replaced
+            by one consolidated row each; any date-group that didn't match a
+            payout (individually or in combination) passes through
+            unchanged, transaction by transaction
         payout_dates: {payout_index: date_str_or_None} - None means no
             matching date-group (or unambiguous combination) was found for
             that payout (render as unreconciled in MemberHub_Summary, don't
@@ -726,13 +736,8 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
             recorded in QuickBooks this month at all, which no amount of
             matching logic can fix
     """
-    givebacks_txns = [t for t in credit_txns
-                      if t.get('description') == 'MemberHub/Givebacks Deposit']
-    other_txns = [t for t in credit_txns
-                 if t.get('description') != 'MemberHub/Givebacks Deposit']
-
     by_date = {}
-    for t in givebacks_txns:
+    for t in credit_txns:
         by_date.setdefault(t['date'], []).append(t)
 
     date_group_sums = {date: round(sum(t['amount'] for t in group), 2)
@@ -790,14 +795,14 @@ def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
             used_dates.update(combo)
             payout_dates[i] = add_consolidated_row(list(combo), payout_total)
 
-    # Givebacks-tagged date-groups that never matched a payout (individually
-    # or in combination) pass through unchanged - safe fallback, still
-    # visible, just not consolidated.
+    # Date-groups that never matched a payout (individually or in
+    # combination) pass through unchanged - safe fallback, still visible,
+    # just not consolidated.
     for date, group in by_date.items():
         if date not in used_dates:
             consolidated_rows.extend(group)
 
-    return other_txns + consolidated_rows, payout_dates
+    return consolidated_rows, payout_dates
 
 
 def extract_payout_id(filename: str):
