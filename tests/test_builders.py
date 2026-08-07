@@ -348,6 +348,36 @@ def test_build_credits_sheet_bank_statement_column():
     assert bank_stmts == ['August', 'August']  # July txn lagged into August's statement
 
 
+def test_build_credits_sheet_labels_raw_bank_deposits():
+    credits_by_month = [
+        ('September 2025', [
+            {'date': '09/24/2025', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT ID NUMBER XX8881', 'category': 'Book Fair',
+             'amount': 4365.50, 'is_income': True, 'bank_statement_month': 'September 2025'},
+            {'date': '09/12/2025', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Holiday Boutique',
+             'amount': 500.0, 'is_income': True, 'bank_statement_month': 'September 2025'},
+            {'date': '09/19/2025', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'MemberHub/Givebacks Deposit', 'category': 'MemberHub/Givebacks Deposit',
+             'amount': 90.0, 'is_income': True, 'bank_statement_month': 'September 2025'},
+        ]),
+    ]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, credits_by_month, 'Test PTA',
+                         {'Book Fair': 'Book Fair', 'Holiday Boutique': 'Holiday Boutique'})
+    rows = _cell_values(ws)
+    data_rows = {r[0]: r for r in rows if isinstance(r[0], str) and '/' in str(r[0])}
+    # both raw cash/check deposits show the generic category label...
+    assert data_rows['09/24/2025'][1] == 'Bank Deposit (cash/check)'
+    assert data_rows['09/12/2025'][1] == 'Bank Deposit (cash/check)'
+    # ...but keep their real budget line
+    assert data_rows['09/24/2025'][5] == 'Book Fair'
+    assert data_rows['09/12/2025'][5] == 'Holiday Boutique'
+    # a Givebacks-sourced row is untouched
+    assert data_rows['09/19/2025'][1] == 'MemberHub/Givebacks Deposit'
+
+
 def test_build_debits_sheet_running_total_and_notes_blank():
     wb = openpyxl.Workbook()
     ws = wb.active

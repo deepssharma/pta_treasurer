@@ -939,6 +939,14 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
     Only auto-derivable columns are populated (date, category, amount, month,
     mapped budget line, running total) - there's no Notes column here because
     nothing in the parsed data maps to hand-written reconciliation notes.
+
+    A transaction QuickBooks recorded as a literal cash/check bank deposit
+    (raw description 'DEPOSIT' or 'DEPOSIT ID NUMBER ...', not an electronic
+    Givebacks/MemberHub payout) shows 'Bank Deposit (cash/check)' in CATEGORY
+    instead of its QuickBooks category name (e.g. 'Book Fair') - BUDGET LINE
+    still maps from the real category, so the budget rollup is unaffected;
+    only the CATEGORY label changes, to distinguish it from an electronic
+    payout at a glance.
     """
     qb_to_budget_map = qb_to_budget_map or {}
     ws.sheet_view.showGridLines = False
@@ -959,10 +967,13 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
         for t in _sort_by_date(txns):
             running += t['amount']
             budget_line = qb_to_budget_map.get(t['category'], t['category'])
+            desc = (t.get('description') or '').strip().upper()
+            is_bank_deposit = desc == 'DEPOSIT' or desc.startswith('DEPOSIT ID NUMBER')
+            category_label = 'Bank Deposit (cash/check)' if is_bank_deposit else t['category']
             bank_stmt = t.get('bank_statement_month')
             bank_stmt = bank_stmt.split()[0] if bank_stmt else '—'
             row = _wide_data_row(ws, row, [
-                t['date'], t['category'], t['amount'],
+                t['date'], category_label, t['amount'],
                 month_label.split()[0], bank_stmt, budget_line, running,
             ], money_cols={2, 6})
 
