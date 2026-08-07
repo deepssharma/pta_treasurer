@@ -10,8 +10,8 @@ import pytest
 import openpyxl
 from builders import (build_treasurer, build_budget, build_givebacks,
                       build_manifest, build_credits_sheet, build_debits_sheet,
-                      build_memberhub_summary_sheet, FISCAL_MONTHS,
-                      GOLD_FILL, RED_FILL)
+                      build_memberhub_summary_sheet, build_ytd_summary,
+                      FISCAL_MONTHS, GOLD_FILL, RED_FILL)
 
 
 # ── Mock data ─────────────────────────────────────────────────────────────────
@@ -161,6 +161,25 @@ def test_build_treasurer_pta_money_negative_flags_red():
     assert pta_cell.fill != GOLD_FILL
 
 
+# ── YTD Summary PTA Money tests ───────────────────────────────────────────────
+
+def test_build_ytd_summary_without_readthon_no_pta_money(sample_merged_income, sample_merged_expense):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_ytd_summary(ws, sample_merged_income, sample_merged_expense, 'Test PTA',
+                      'July 2025', 0, FISCAL_MONTHS, bank=MOCK_BANK)
+    assert ws['H3'].value is None
+    assert ws['I3'].value is None
+
+def test_build_ytd_summary_pta_money_present(sample_merged_income, sample_merged_expense):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_ytd_summary(ws, sample_merged_income, sample_merged_expense, 'Test PTA',
+                      'July 2025', 0, FISCAL_MONTHS, bank=MOCK_BANK, readthon=MOCK_READTHON)
+    assert ws['H3'].value == 'PTA Money:'
+    assert ws['I3'].value == MOCK_BANK['ending_balance'] - MOCK_READTHON['balance_held']
+
+
 # ── Budget sheet tests ────────────────────────────────────────────────────────
 
 def test_build_budget_income(sample_merged_income):
@@ -239,11 +258,13 @@ def test_fiscal_months_order():
 MOCK_CREDITS_BY_MONTH = [
     ('July 2025', [
         {'date': '07/17/2025', 'type': 'Deposit', 'check_no': '', 'payee': 'MemberHub',
-         'description': 'Deposit', 'category': 'Membership', 'amount': 110.14, 'is_income': True},
+         'description': 'Deposit', 'category': 'Membership', 'amount': 110.14, 'is_income': True,
+         'bank_statement_month': 'August 2025'},  # lag case
     ]),
     ('August 2025', [
         {'date': '08/05/2025', 'type': 'Deposit', 'check_no': '', 'payee': 'MemberHub',
-         'description': 'Deposit', 'category': 'Book Fair', 'amount': 50.0, 'is_income': True},
+         'description': 'Deposit', 'category': 'Book Fair', 'amount': 50.0, 'is_income': True,
+         'bank_statement_month': 'August 2025'},  # same-month match
     ]),
     ('September 2025', []),  # no credits that month - should be skipped, not error
 ]
@@ -251,17 +272,24 @@ MOCK_CREDITS_BY_MONTH = [
 MOCK_DEBITS_BY_MONTH = [
     ('July 2025', [
         {'date': '07/01/2025', 'type': 'Check', 'check_no': '1077', 'payee': 'Jane Doe',
-         'description': 'CHECK # 1077', 'category': 'Picnic', 'amount': 181.58, 'is_income': False},
+         'description': 'CHECK # 1077', 'category': 'Picnic', 'amount': 181.58, 'is_income': False,
+         'bank_statement_month': 'July 2025'},
         {'date': '07/17/2025', 'type': 'Expense', 'check_no': '', 'payee': 'Quickbooks Online',
          'description': 'Accounting', 'category': 'Accounting Expense (Quickbooks)',
-         'amount': 1257.76, 'is_income': False},
+         'amount': 1257.76, 'is_income': False,
+         'bank_statement_month': None},  # unmatched - should render as '—'
     ]),
 ]
 
 MOCK_GIVEBACKS_BY_MONTH = [
     ('July 2025', [
-        {'item': 'Shop to Give Donation', 'category': '', 'count': 1, 'total': 95.14, 'source_file': 'x.csv'},
-        {'item': 'Teacher/Staff', 'category': 'Memberships', 'count': 1, 'total': 15.0, 'source_file': 'x.csv'},
+        {'date': '07/10/2025', 'total': 110.14, 'items': [
+            {'item': 'Shop to Give Donation', 'category': '', 'count': 1, 'total': 95.14, 'source_file': 'x.csv'},
+            {'item': 'Teacher/Staff', 'category': 'Memberships', 'count': 1, 'total': 15.0, 'source_file': 'x.csv'},
+        ]},
+        {'date': None, 'total': 50.0, 'items': [
+            {'item': 'Family Membership', 'category': '', 'count': 1, 'total': 50.0, 'source_file': 'y.csv'},
+        ]},
     ]),
 ]
 
@@ -277,7 +305,7 @@ def test_build_credits_sheet_running_total():
     ws = wb.active
     build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
     rows = _cell_values(ws)
-    amounts = [r[5] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    amounts = [r[6] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
     assert amounts == [110.14, 160.14]  # cumulative across months
 
 
@@ -295,7 +323,7 @@ def test_build_credits_sheet_budget_line_mapping():
     ws = wb.active
     build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
     rows = _cell_values(ws)
-    budget_lines = [r[4] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    budget_lines = [r[5] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
     assert budget_lines == ['Membership Income', 'Book Fair']  # mapped / falls back to raw category
 
 
@@ -309,6 +337,17 @@ def test_build_credits_sheet_total_row():
     assert total_rows[0][2] == 160.14
 
 
+def test_build_credits_sheet_bank_statement_column():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    header = [r for r in rows if r[0] == 'DEPOSIT DATE'][0]
+    assert header[4] == 'BANK STATEMENT'
+    bank_stmts = [r[4] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    assert bank_stmts == ['August', 'August']  # July txn lagged into August's statement
+
+
 def test_build_debits_sheet_running_total_and_notes_blank():
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -316,9 +355,21 @@ def test_build_debits_sheet_running_total_and_notes_blank():
     rows = _cell_values(ws)
     data_rows = [r for r in rows if r[0] in ('1077', '')]
     assert len(data_rows) == 2
-    assert data_rows[1][8] == 1439.34  # running total after both debits
+    assert data_rows[1][9] == 1439.34  # running total after both debits
     for r in data_rows:
-        assert not r[7]  # NOTES column intentionally blank
+        assert not r[8]  # NOTES column intentionally blank
+
+
+def test_build_debits_sheet_bank_statement_column():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_debits_sheet(ws, MOCK_DEBITS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    header = [r for r in rows if r[0] == 'CHECK #'][0]
+    assert header[6] == 'BANK STATEMENT'
+    data_rows = [r for r in rows if r[0] in ('1077', '')]
+    assert data_rows[0][6] == 'July'    # matched
+    assert data_rows[1][6] == '—'       # unmatched (bank_statement_month=None)
 
 
 def test_build_debits_sheet_total_row():
@@ -331,14 +382,35 @@ def test_build_debits_sheet_total_row():
     assert total_rows[0][4] == 1439.34
 
 
-def test_build_memberhub_summary_statement_total_once_per_month():
+def test_build_memberhub_summary_payout_bands_present():
     wb = openpyxl.Workbook()
     ws = wb.active
     build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
     rows = _cell_values(ws)
-    item_rows = [r for r in rows if r[0] in ('Shop to Give Donation', 'Teacher/Staff')]
-    assert item_rows[0][3] == 110.14   # statement total on first item row
-    assert item_rows[1][3] is None     # not repeated on subsequent rows
+    payout_labels = [r[0] for r in rows if isinstance(r[0], str) and r[0].startswith('Payout')]
+    # dated payout sorts before the unreconciled (date=None) one
+    assert payout_labels == ['Payout — 07/10/2025', 'Payout — (date not reconciled)']
+
+
+def test_build_memberhub_summary_payout_band_shows_total():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    dated_payout = [r for r in rows if r[0] == 'Payout — 07/10/2025'][0]
+    assert dated_payout[2] == 110.14
+
+
+def test_build_memberhub_summary_items_nested_under_payout():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    item_rows = [r for r in rows
+                if r[0] in ('Shop to Give Donation', 'Teacher/Staff', 'Family Membership')]
+    assert len(item_rows) == 3
+    assert item_rows[0][2] == 95.14
+    assert item_rows[2][2] == 50.0  # unreconciled payout's item still rendered, not dropped
 
 
 def test_build_memberhub_summary_running_total():
@@ -346,5 +418,16 @@ def test_build_memberhub_summary_running_total():
     ws = wb.active
     build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
     rows = _cell_values(ws)
-    item_rows = [r for r in rows if r[0] in ('Shop to Give Donation', 'Teacher/Staff')]
-    assert [r[4] for r in item_rows] == [95.14, 110.14]
+    item_rows = [r for r in rows
+                if r[0] in ('Shop to Give Donation', 'Teacher/Staff', 'Family Membership')]
+    assert [r[3] for r in item_rows] == [95.14, 110.14, 160.14]
+
+
+def test_build_memberhub_summary_total_row():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_memberhub_summary_sheet(ws, MOCK_GIVEBACKS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    total_rows = [r for r in rows if r[0] == 'TOTAL GIVEBACKS']
+    assert len(total_rows) == 1
+    assert total_rows[0][2] == 160.14

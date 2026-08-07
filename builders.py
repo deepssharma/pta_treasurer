@@ -537,7 +537,7 @@ def build_manifest(ws, month_folder, org_name, month_label,
 # ── 5. YTD SUMMARY ───────────────────────────────────────────────────────────
 def build_ytd_summary(ws, income_merged, expense_merged, org_name,
                       month_label, fiscal_idx, fiscal_months,
-                      bank, balance_forward=0.0):
+                      bank, balance_forward=0.0, readthon=None):
     ws.sheet_view.showGridLines = False
     ws.column_dimensions['A'].width = 28
     for col in ['B','C','D','E','F','G','H','I']:
@@ -574,6 +574,14 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
                   if bank.get('period') else '')
     ws['G3'].value = f'as of {period_end}'
     ws['G3'].font = Font(name='Arial', italic=True, size=9, color='666666')
+
+    if readthon is not None:
+        ws['H3'].value = 'PTA Money:'
+        ws['H3'].font = BOLD_FONT
+        ws['I3'].value = bank['ending_balance'] - readthon['balance_held']
+        ws['I3'].font = BOLD_FONT
+        ws['I3'].number_format = MONEY_FMT
+
     ws.row_dimensions[3].height = 18
 
     # YTD totals
@@ -872,6 +880,19 @@ def _month_band(ws, row, month_label, n_cols):
     return row + 1
 
 
+def _payout_band(ws, row, label, total, n_cols, amount_col):
+    for i in range(n_cols):
+        c = ws.cell(row=row, column=i + 1)
+        c.fill = LTBLUE_FILL; c.border = THIN_BORDER
+    ws.cell(row=row, column=1, value=label).font = BOLD_FONT
+    ws.cell(row=row, column=1).alignment = Alignment(indent=1)
+    c = ws.cell(row=row, column=amount_col + 1, value=total)
+    c.font = BOLD_FONT; c.number_format = MONEY_FMT
+    c.alignment = Alignment(horizontal='right')
+    ws.row_dimensions[row].height = 16
+    return row + 1
+
+
 def _wide_data_row(ws, row, values, money_cols=()):
     for i, val in enumerate(values):
         c = ws.cell(row=row, column=i + 1, value=val)
@@ -921,28 +942,31 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
     """
     qb_to_budget_map = qb_to_budget_map or {}
     ws.sheet_view.showGridLines = False
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F'], [14, 30, 14, 10, 26, 16]):
+    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G'], [14, 30, 14, 10, 16, 26, 16]):
         ws.column_dimensions[col].width = w
 
-    row = _wide_hdr_row(ws, 1, org_name, 'Credits (Deposits) - Fiscal Year', 6)
+    row = _wide_hdr_row(ws, 1, org_name, 'Credits (Deposits) - Fiscal Year', 7)
     row += 1
     row = _wide_col_hdrs(row=row, ws=ws, labels=[
-        'DEPOSIT DATE', 'CATEGORY', '$ AMOUNT', 'MONTH', 'BUDGET LINE', 'RUNNING TOTAL'])
+        'DEPOSIT DATE', 'CATEGORY', '$ AMOUNT', 'MONTH', 'BANK STATEMENT',
+        'BUDGET LINE', 'RUNNING TOTAL'])
 
     running = 0.0
     for month_label, txns in credits_by_month:
         if not txns:
             continue
-        row = _month_band(ws, row, month_label, n_cols=6)
+        row = _month_band(ws, row, month_label, n_cols=7)
         for t in _sort_by_date(txns):
             running += t['amount']
             budget_line = qb_to_budget_map.get(t['category'], t['category'])
+            bank_stmt = t.get('bank_statement_month')
+            bank_stmt = bank_stmt.split()[0] if bank_stmt else '—'
             row = _wide_data_row(ws, row, [
                 t['date'], t['category'], t['amount'],
-                month_label.split()[0], budget_line, running,
-            ], money_cols={2, 5})
+                month_label.split()[0], bank_stmt, budget_line, running,
+            ], money_cols={2, 6})
 
-    row = _wide_total_row(ws, row, 6, 'TOTAL CREDITS', running, amount_col=2)
+    row = _wide_total_row(ws, row, 7, 'TOTAL CREDITS', running, amount_col=2)
     return row
 
 
@@ -958,67 +982,75 @@ def build_debits_sheet(ws, debits_by_month, org_name, qb_to_budget_map=None):
     """
     qb_to_budget_map = qb_to_budget_map or {}
     ws.sheet_view.showGridLines = False
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
-                       [10, 12, 22, 26, 12, 10, 22, 24]):
+    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'],
+                       [10, 12, 22, 26, 12, 10, 16, 22, 24]):
         ws.column_dimensions[col].width = w
 
-    row = _wide_hdr_row(ws, 1, org_name, 'Debits (Checks/Expenses) - Fiscal Year', 8)
+    row = _wide_hdr_row(ws, 1, org_name, 'Debits (Checks/Expenses) - Fiscal Year', 9)
     row += 1
     row = _wide_col_hdrs(row=row, ws=ws, labels=[
         'CHECK #', 'DATE', 'PAYEE', 'CATEGORY', '$ AMOUNT',
-        'MONTH', 'BUDGET LINE', 'NOTES'])
-    # Running total lives in a 9th column, added after NOTES so a blank
+        'MONTH', 'BANK STATEMENT', 'BUDGET LINE', 'NOTES'])
+    # Running total lives in a 10th column, added after NOTES so a blank
     # Notes cell doesn't visually break the money column next to it.
-    ws.cell(row=row - 1, column=9, value='RUNNING TOTAL').font = SUBHDR_FONT
-    ws.cell(row=row - 1, column=9).fill = TEAL_FILL
-    ws.cell(row=row - 1, column=9).border = THIN_BORDER
-    ws.cell(row=row - 1, column=9).alignment = Alignment(horizontal='center', vertical='center')
-    ws.column_dimensions['I'].width = 16
+    ws.cell(row=row - 1, column=10, value='RUNNING TOTAL').font = SUBHDR_FONT
+    ws.cell(row=row - 1, column=10).fill = TEAL_FILL
+    ws.cell(row=row - 1, column=10).border = THIN_BORDER
+    ws.cell(row=row - 1, column=10).alignment = Alignment(horizontal='center', vertical='center')
+    ws.column_dimensions['J'].width = 16
 
     running = 0.0
     for month_label, txns in debits_by_month:
         if not txns:
             continue
-        row = _month_band(ws, row, month_label, n_cols=9)
+        row = _month_band(ws, row, month_label, n_cols=10)
         for t in _sort_by_date(txns):
             running += t['amount']
             budget_line = qb_to_budget_map.get(t['category'], t['category'])
+            bank_stmt = t.get('bank_statement_month')
+            bank_stmt = bank_stmt.split()[0] if bank_stmt else '—'
             row = _wide_data_row(ws, row, [
                 t['check_no'], t['date'], t['payee'], t['category'], t['amount'],
-                month_label.split()[0], budget_line, '', running,
-            ], money_cols={4, 8})
+                month_label.split()[0], bank_stmt, budget_line, '', running,
+            ], money_cols={4, 9})
 
-    row = _wide_total_row(ws, row, 9, 'TOTAL DEBITS', running, amount_col=4)
+    row = _wide_total_row(ws, row, 10, 'TOTAL DEBITS', running, amount_col=4)
     return row
 
 
 def build_memberhub_summary_sheet(ws, givebacks_by_month, org_name):
     """
-    givebacks_by_month: list of (month_label, [item, ...]) in chronological
-    fiscal-year order. Each item is one dict from
-    parsers.parse_givebacks_files() (item, category, count, total, source_file).
+    givebacks_by_month: list of (month_label, [payout, ...]) in chronological
+    fiscal-year order. Each payout is a dict {date, total, items} - date is
+    the matched bank deposit date (None if unreconciled - rendered as such,
+    never dropped), items is that one payout file's line items (dicts with
+    item/category/count/total/source_file, from
+    parsers.parse_givebacks_files() called once per payout file). Payouts
+    within a month are sorted by date, unreconciled ones listed last.
     """
     ws.sheet_view.showGridLines = False
-    for col, w in zip(['A', 'B', 'C', 'D', 'E'], [28, 24, 14, 18, 16]):
+    for col, w in zip(['A', 'B', 'C', 'D'], [30, 24, 14, 16]):
         ws.column_dimensions[col].width = w
 
-    row = _wide_hdr_row(ws, 1, org_name, 'MemberHub / Givebacks Summary - Fiscal Year', 5)
+    row = _wide_hdr_row(ws, 1, org_name, 'MemberHub / Givebacks Summary - Fiscal Year', 4)
     row += 1
     row = _wide_col_hdrs(row=row, ws=ws, labels=[
-        'ITEM', 'CATEGORY', '$ AMOUNT', 'STATEMENT TOTAL', 'RUNNING TOTAL'])
+        'ITEM', 'CATEGORY', '$ AMOUNT', 'RUNNING TOTAL'])
 
     running = 0.0
-    for month_label, items in givebacks_by_month:
-        if not items:
+    for month_label, payouts in givebacks_by_month:
+        if not payouts:
             continue
-        row = _month_band(ws, row, month_label, n_cols=5)
-        statement_total = sum(it['total'] for it in items)
-        for i, it in enumerate(items):
-            running += it['total']
-            row = _wide_data_row(ws, row, [
-                it['item'], it['category'], it['total'],
-                statement_total if i == 0 else None, running,
-            ], money_cols={2, 3, 4})
+        row = _month_band(ws, row, month_label, n_cols=4)
+        sorted_payouts = sorted(payouts, key=lambda p: (p['date'] is None, p['date'] or ''))
+        for payout in sorted_payouts:
+            label = f"Payout — {payout['date']}" if payout['date'] else 'Payout — (date not reconciled)'
+            row = _payout_band(ws, row, label, payout['total'], n_cols=4, amount_col=2)
+            for it in payout['items']:
+                running += it['total']
+                row = _wide_data_row(ws, row, [
+                    it['item'], it['category'], it['total'], running,
+                ], money_cols={2, 3})
 
-    row = _wide_total_row(ws, row, 5, 'TOTAL GIVEBACKS', running, amount_col=2)
+    row = _wide_total_row(ws, row, 4, 'TOTAL GIVEBACKS', running, amount_col=2)
     return row

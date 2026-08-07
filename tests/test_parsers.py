@@ -330,3 +330,297 @@ def test_parse_givebacks_files_source_file():
 def test_parse_givebacks_empty_file_list():
      with pytest.raises(ValueError, match='No Givebacks files provided'):
         parse_givebacks_files([])
+
+
+# ── Tests for find_bank_statement_month ───────────────────────────────────────
+from parsers import find_bank_statement_month
+
+FISCAL_ORDER = ['July 2025', 'August 2025', 'September 2025']
+
+def test_find_bank_statement_month_same_month_credit():
+    txn = {'date': '07/30/2025', 'amount': 110.14, 'is_income': True}
+    bank_by_month = {
+        'July 2025': {'deposits': [{'date': '07/30', 'amount': 110.14}],
+                      'checks': [], 'withdrawals': []},
+    }
+    result = find_bank_statement_month(txn, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert result == 'July 2025'
+
+def test_find_bank_statement_month_next_month_lag_credit():
+    txn = {'date': '07/30/2025', 'amount': 110.14, 'is_income': True}
+    bank_by_month = {
+        'July 2025':   {'deposits': [], 'checks': [], 'withdrawals': []},
+        'August 2025': {'deposits': [{'date': '08/01', 'amount': 110.14}],
+                        'checks': [], 'withdrawals': []},
+    }
+    result = find_bank_statement_month(txn, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert result == 'August 2025'
+
+def test_find_bank_statement_month_unmatched():
+    txn = {'date': '07/30/2025', 'amount': 999.99, 'is_income': True}
+    bank_by_month = {
+        'July 2025':   {'deposits': [{'date': '07/30', 'amount': 110.14}],
+                        'checks': [], 'withdrawals': []},
+        'August 2025': {'deposits': [{'date': '08/01', 'amount': 50.00}],
+                        'checks': [], 'withdrawals': []},
+    }
+    result = find_bank_statement_month(txn, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert result is None
+
+def test_find_bank_statement_month_same_month_debit_check():
+    txn = {'date': '07/01/2025', 'amount': 181.58, 'is_income': False}
+    bank_by_month = {
+        'July 2025': {'deposits': [], 'checks': [{'date': '07/01', 'amount': 181.58}],
+                      'withdrawals': []},
+    }
+    result = find_bank_statement_month(txn, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert result == 'July 2025'
+
+def test_find_bank_statement_month_debit_matches_withdrawals():
+    txn = {'date': '07/17/2025', 'amount': 1257.76, 'is_income': False}
+    bank_by_month = {
+        'July 2025': {'deposits': [], 'checks': [],
+                      'withdrawals': [{'date': '07/17', 'amount': 1257.76}]},
+    }
+    result = find_bank_statement_month(txn, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert result == 'July 2025'
+
+def test_find_bank_statement_month_no_next_month_in_order():
+    # Last month in fiscal_order - no "next month" to fall back to
+    txn = {'date': '09/15/2025', 'amount': 42.00, 'is_income': True}
+    bank_by_month = {'September 2025': {'deposits': [], 'checks': [], 'withdrawals': []}}
+    result = find_bank_statement_month(txn, 'September 2025', bank_by_month, FISCAL_ORDER)
+    assert result is None
+
+
+# ── Tests for match_credits_to_bank_statement ─────────────────────────────────
+from parsers import match_credits_to_bank_statement
+
+def test_match_credits_to_bank_statement_same_day_group_sums_to_deposit():
+    credits = [
+        {'date': '07/10/2025', 'amount': 95.14, 'is_income': True},
+        {'date': '07/10/2025', 'amount': 15.00, 'is_income': True},
+    ]
+    bank_by_month = {
+        'July 2025': {'deposits': [{'date': '07/10', 'amount': 110.14}]},
+    }
+    match_credits_to_bank_statement(credits, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert all(t['bank_statement_month'] == 'July 2025' for t in credits)
+
+def test_match_credits_to_bank_statement_next_month_lag_group():
+    credits = [
+        {'date': '07/30/2025', 'amount': 60.0, 'is_income': True},
+        {'date': '07/30/2025', 'amount': 40.0, 'is_income': True},
+    ]
+    bank_by_month = {
+        'July 2025':   {'deposits': []},
+        'August 2025': {'deposits': [{'date': '08/01', 'amount': 100.0}]},
+    }
+    match_credits_to_bank_statement(credits, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert all(t['bank_statement_month'] == 'August 2025' for t in credits)
+
+def test_match_credits_to_bank_statement_different_dates_grouped_separately():
+    credits = [
+        {'date': '07/01/2025', 'amount': 50.0, 'is_income': True},
+        {'date': '07/02/2025', 'amount': 50.0, 'is_income': True},
+    ]
+    bank_by_month = {
+        'July 2025': {'deposits': [
+            {'date': '07/01', 'amount': 50.0},
+            {'date': '07/02', 'amount': 50.0},
+        ]},
+    }
+    match_credits_to_bank_statement(credits, 'July 2025', bank_by_month, FISCAL_ORDER)
+    # each date is its own group, matched independently (not summed together)
+    assert all(t['bank_statement_month'] == 'July 2025' for t in credits)
+
+def test_match_credits_to_bank_statement_unmatched_group():
+    credits = [{'date': '07/10/2025', 'amount': 999.99, 'is_income': True}]
+    bank_by_month = {'July 2025': {'deposits': [{'date': '07/10', 'amount': 110.14}]}}
+    match_credits_to_bank_statement(credits, 'July 2025', bank_by_month, FISCAL_ORDER)
+    assert credits[0]['bank_statement_month'] is None
+
+def test_match_credits_to_bank_statement_single_transaction_group():
+    # Degenerate case: a "group" of one still works the same as the plain
+    # per-transaction match.
+    credits = [{'date': '08/05/2025', 'amount': 50.0, 'is_income': True}]
+    bank_by_month = {'August 2025': {'deposits': [{'date': '08/05', 'amount': 50.0}]}}
+    match_credits_to_bank_statement(credits, 'August 2025', bank_by_month, FISCAL_ORDER)
+    assert credits[0]['bank_statement_month'] == 'August 2025'
+
+
+# ── Tests for parse_chase_pdf regression fixes ────────────────────────────────
+# pdfplumber.open is mocked so these exercise the text-parsing regexes
+# directly against synthetic (but realistically-shaped) statement text,
+# without needing real PDF binary fixtures for each edge case.
+from unittest.mock import patch, MagicMock
+
+
+def _mock_chase_pdf(text):
+    fake_page = MagicMock()
+    fake_page.extract_text.return_value = text
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__.return_value = fake_pdf
+    fake_pdf.__exit__.return_value = False
+    fake_pdf.pages = [fake_page]
+    return patch('parsers.pdfplumber.open', return_value=fake_pdf)
+
+
+def test_parse_chase_pdf_check_with_gap_marker():
+    """Chase marks non-sequential check numbers with a leading '*' before
+    the '^' (e.g. '1257 *^ 05/12 4,280.30') - must not be silently dropped."""
+    text = (
+        "CHECKS PAID\n"
+        "1243 ^ 05/12 1,255.00\n"
+        "1257 *^ 05/12 4,280.30\n"
+        "ELECTRONIC WITHDRAWALS\n"
+    )
+    with _mock_chase_pdf(text):
+        result = parse_chase_pdf(Path('fake.pdf'))
+    check_numbers = [c['check_no'] for c in result['checks']]
+    assert '1243' in check_numbers
+    assert '1257' in check_numbers
+    gap_check = next(c for c in result['checks'] if c['check_no'] == '1257')
+    assert gap_check['amount'] == 4280.30
+
+
+def test_parse_chase_pdf_withdrawals_skips_summary_line_duplicate():
+    """'Electronic Withdrawals' appears twice: once as a title-case one-line
+    summary near the top, once as the real ALL CAPS itemized section header
+    further down. Must parse from the real header, not the summary line."""
+    text = (
+        "Electronic Withdrawals   1   -37.00\n"  # summary line (title case)
+        "CHECKS PAID\n"
+        "1243 ^ 05/12 1,255.00\n"
+        "ELECTRONIC WITHDRAWALS\n"                # real section header (caps)
+        "05/26 Orig Co Name Some Vendor Desc $37.00\n"
+        "DAILY ENDING BALANCE\n"
+    )
+    with _mock_chase_pdf(text):
+        result = parse_chase_pdf(Path('fake.pdf'))
+    assert len(result['withdrawals']) == 1
+    assert result['withdrawals'][0]['amount'] == 37.00
+
+
+def test_parse_chase_pdf_withdrawal_amount_with_dollar_sign():
+    """A '$' sitting directly against the digits (no space of its own)
+    must not prevent the amount from matching."""
+    text = (
+        "CHECKS PAID\n"
+        "ELECTRONIC WITHDRAWALS\n"
+        "05/26 Orig Co Name Some Vendor Desc $37.00\n"
+        "05/27 Orig Co Name Other Vendor Desc 6,990.00\n"
+        "DAILY ENDING BALANCE\n"
+    )
+    with _mock_chase_pdf(text):
+        result = parse_chase_pdf(Path('fake.pdf'))
+    amounts = sorted(w['amount'] for w in result['withdrawals'])
+    assert amounts == [37.00, 6990.00]
+
+
+# ── Tests for consolidate_givebacks_payouts ───────────────────────────────────
+from parsers import consolidate_givebacks_payouts
+
+def _gb_txn(date, amount, description='MemberHub/Givebacks Deposit', category='Membership'):
+    return {'date': date, 'amount': amount, 'is_income': True,
+            'description': description, 'category': category,
+            'bank_statement_month': 'July 2025'}
+
+def test_consolidate_givebacks_payouts_matches_and_consolidates():
+    credits = [
+        _gb_txn('07/10/2025', 95.14),
+        _gb_txn('07/10/2025', 15.00),
+    ]
+    payouts = [{'total': 110.14, 'items': [{'item': 'Donations', 'total': 95.14},
+                                            {'item': 'Teachers', 'total': 15.00}],
+                'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert len(result) == 1
+    assert result[0]['amount'] == 110.14
+    assert result[0]['category'] == 'MemberHub/Givebacks Deposit'
+    assert result[0]['date'] == '07/10/2025'
+    assert payout_dates == {0: '07/10/2025'}
+
+def test_consolidate_givebacks_payouts_unmatched_payout_keeps_none():
+    credits = [_gb_txn('07/10/2025', 50.0)]  # doesn't sum to any payout below
+    payouts = [{'total': 999.99, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates == {0: None}
+    # the unmatched Givebacks-tagged transaction passes through unconsolidated
+    assert len(result) == 1
+    assert result[0]['amount'] == 50.0
+
+def test_consolidate_givebacks_payouts_non_givebacks_untouched():
+    credits = [
+        {'date': '07/05/2025', 'amount': 200.0, 'is_income': True,
+         'description': 'Some Other Deposit', 'category': 'Sponsors',
+         'bank_statement_month': 'July 2025'},
+    ]
+    payouts = [{'total': 200.0, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    # non-Givebacks transaction never consolidates, even though the amount
+    # coincidentally matches a payout total
+    assert payout_dates == {0: None}
+    assert len(result) == 1
+    assert result[0]['description'] == 'Some Other Deposit'
+    assert result[0]['category'] == 'Sponsors'
+
+def test_consolidate_givebacks_payouts_multiple_payouts_matched_independently():
+    credits = [
+        _gb_txn('08/01/2025', 40.0), _gb_txn('08/01/2025', 10.0),   # group A: 50.0
+        _gb_txn('08/05/2025', 30.0), _gb_txn('08/05/2025', 30.0),   # group B: 60.0
+    ]
+    payouts = [
+        {'total': 60.0, 'items': [], 'source_file': 'p_b.csv'},
+        {'total': 50.0, 'items': [], 'source_file': 'p_a.csv'},
+    ]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates[0] == '08/05/2025'  # matched the 60.0 group
+    assert payout_dates[1] == '08/01/2025'  # matched the 50.0 group
+    amounts = sorted(r['amount'] for r in result)
+    assert amounts == [50.0, 60.0]
+
+def test_consolidate_givebacks_payouts_cross_date_combination_match():
+    # Payout total (110.14) matches no single date, only 08/01 + 08/08 combined
+    credits = [
+        _gb_txn('08/01/2025', 95.14),
+        _gb_txn('08/08/2025', 15.00),
+    ]
+    payouts = [{'total': 110.14, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates[0] == '08/01/2025'  # earliest of the combined dates
+    assert len(result) == 1
+    assert result[0]['amount'] == 110.14
+
+def test_consolidate_givebacks_payouts_ambiguous_combination_stays_unmatched():
+    # Two different date-groups both sum to 100.0 in different ways - genuinely
+    # ambiguous, must not guess.
+    credits = [
+        _gb_txn('08/01/2025', 40.0),
+        _gb_txn('08/08/2025', 60.0),
+        _gb_txn('08/15/2025', 30.0),
+        _gb_txn('08/22/2025', 70.0),
+    ]
+    payouts = [{'total': 100.0, 'items': [], 'source_file': 'p1.csv'}]
+    result, payout_dates = consolidate_givebacks_payouts(credits, payouts)
+    assert payout_dates[0] is None
+    # nothing consolidated - all 4 original transactions pass through unchanged
+    assert len(result) == 4
+
+
+# ── Tests for extract_payout_id ───────────────────────────────────────────────
+from parsers import extract_payout_id
+
+def test_extract_payout_id_basic():
+    assert extract_payout_id('givebacks_august_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv') == '1Rql024TnYF4pDk8eQ4Q3ZZ8'
+
+def test_extract_payout_id_different_month_same_id():
+    # the exact scenario that causes a cross-month duplicate: same id, two
+    # different month prefixes
+    july_id = extract_payout_id('givebacks_july_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv')
+    august_id = extract_payout_id('givebacks_august_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv')
+    assert july_id == august_id == '1Rql024TnYF4pDk8eQ4Q3ZZ8'
+
+def test_extract_payout_id_no_match_returns_none():
+    assert extract_payout_id('some_other_file.csv') is None
+    assert extract_payout_id('givebacks_july.csv') is None

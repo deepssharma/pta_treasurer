@@ -11,6 +11,7 @@ import pdfplumber
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
+from itertools import combinations
 
 def _read_csv_robust(path: Path) -> list:
     """
@@ -457,8 +458,11 @@ def parse_chase_pdf(bank_file: Path) -> dict:
             })
 
     # Checks
+    # Chase marks non-sequential ("gap") check numbers with a leading '*'
+    # before the '^' - e.g. "1257 *^ 05/12 4,280.30" - which the old \^?-only
+    # pattern didn't account for, silently dropping every such check.
     for m in re.finditer(
-            r'(\d{4})\s+\^?\s+(\d{2}/\d{2})\s+\$?([\d,]+\.\d{2})', text):
+            r'(\d{4})\s+\*?\^?\s+(\d{2}/\d{2})\s+\$?([\d,]+\.\d{2})', text):
         bank['checks'].append({
             'check_no': m.group(1),
             'date':     m.group(2),
@@ -466,13 +470,24 @@ def parse_chase_pdf(bank_file: Path) -> dict:
         })
 
     # Other Withdrawals
+    # No IGNORECASE here on purpose: Chase statements repeat "Electronic
+    # Withdrawals" in title case as a one-line summary near the top (e.g.
+    # "Electronic Withdrawals   2   -7,027.00") before the real itemized
+    # section header, which is consistently ALL CAPS further down. Matching
+    # case-insensitively grabs that earlier summary line instead - wrong
+    # slice of text, wrong (empty) transaction list.
     wd = re.search(
         r'(?:OTHER WITHDRAWALS|ELECTRONIC WITHDRAWALS)(.*?)'
         r'(?:FEES|DAILY ENDING BALANCE|CHECKS PAID)',
-        text, re.DOTALL | re.IGNORECASE)
+        text, re.DOTALL)
     if wd:
+        # $ (when present) sits directly against the digits with no space
+        # of its own, e.g. "...CO Entry $37.00" - without \$? here, \s+
+        # can never land right before the digit run whenever a $ prefix is
+        # present, silently dropping that entry entirely (unlike deposits/
+        # checks above, which already handle this with \$?).
         for m in re.finditer(
-                r'(\d{2}/\d{2})\s+(.+?)\s+([\d,]+\.\d{2})', wd.group(1)):
+                r'(\d{2}/\d{2})\s+(.+?)\s+\$?([\d,]+\.\d{2})', wd.group(1)):
             bank['withdrawals'].append({
                 'date':        m.group(1),
                 'description': m.group(2).strip(),
@@ -508,5 +523,298 @@ def parse_chase_pdf(bank_file: Path) -> dict:
     print(f'  Withdrawals   : ${bank["total_withdrawals"]:,.2f}')
     print(f'  Fees          : ${bank["total_fees"]:,.2f}')
     return bank
+
+
+# ── 4. MATCH TRANSACTION TO BANK STATEMENT MONTH ──────────────────────────────
+
+def find_bank_statement_month(txn: dict, month_label: str,
+                               bank_by_month: dict, fiscal_order: list):
+    """
+    A QuickBooks transaction is recorded under the month it was entered/
+    categorized (`month_label`), but the actual bank deposit/check can clear
+    in a *different* calendar month's Chase statement (e.g. a Givebacks
+    payout QuickBooks logs in July may not post to the bank until August).
+    This finds which month's statement actually contains it.
+
+    Args:
+        txn:           a transaction dict from parse_quickbooks_detail()['transactions']
+                       (needs 'date' as MM/DD/YYYY, 'amount', 'is_income')
+        month_label:   the QB-recorded month, e.g. 'July 2025'
+        bank_by_month: {month_label: parse_chase_pdf() result} for every
+                       processed month
+        fiscal_order:  month_labels in true chronological order, used to find
+                       "the next month" after month_label
+
+    Returns:
+        The matched month_label, or None if unmatched (render as "not yet
+        reconciled" rather than silently assuming it's the QB month).
+
+    Match strategy: exact date+amount match within the same month first
+    (bank dates are 'MM/DD' only - the year is inferred from that month's own
+    label). If nothing matches there, falls back to an amount-only match in
+    the next chronological month, since the whole point of the lag case is
+    that the date itself shifted into the next month - there's no reliable
+    date to match against there. This means two unrelated transactions in
+    adjacent months sharing the exact same dollar amount could in theory
+    match incorrectly; for a treasurer's real transaction volume this is an
+    acceptable tradeoff, not a guarantee.
+    """
+    try:
+        txn_date = datetime.strptime(txn['date'], '%m/%d/%Y')
+    except (ValueError, TypeError):
+        return None
+    amount = round(txn['amount'], 2)
+    is_credit = txn.get('is_income', False)
+
+    def bank_entries(bank):
+        return bank.get('deposits', []) if is_credit else (
+            bank.get('checks', []) + bank.get('withdrawals', []))
+
+    def exact_match(bank, bank_month_label):
+        try:
+            year = int(bank_month_label.split()[1])
+        except (IndexError, ValueError):
+            return False
+        for e in bank_entries(bank):
+            try:
+                e_date = datetime.strptime(f"{e['date']}/{year}", '%m/%d/%Y')
+            except (ValueError, KeyError):
+                continue
+            if abs(e['amount'] - amount) < 0.01 and e_date.date() == txn_date.date():
+                return True
+        return False
+
+    def amount_only_match(bank):
+        return any(abs(e['amount'] - amount) < 0.01 for e in bank_entries(bank))
+
+    # 1. Same month, exact date + amount
+    bank = bank_by_month.get(month_label)
+    if bank and exact_match(bank, month_label):
+        return month_label
+
+    # 2. Next chronological month, amount only (the lag case)
+    if month_label in fiscal_order:
+        idx = fiscal_order.index(month_label)
+        if idx + 1 < len(fiscal_order):
+            next_label = fiscal_order[idx + 1]
+            next_bank = bank_by_month.get(next_label)
+            if next_bank and amount_only_match(next_bank):
+                return next_label
+
+    return None
+
+
+def match_credits_to_bank_statement(credits: list, month_label: str,
+                                     bank_by_month: dict, fiscal_order: list):
+    """
+    Unlike debits (each check clears the bank as its own line - a natural
+    1:1 relationship with find_bank_statement_month above), a single bank
+    deposit is very often the sum of several QuickBooks-recorded income
+    transactions that hit the bank the same day (e.g. one ACH Givebacks
+    payout that QuickBooks splits across several income categories).
+    Matching each credit transaction individually against bank deposits
+    therefore misses almost everything - confirmed against real data: every
+    QuickBooks credit transaction sharing an exact date summed to exactly
+    one same-date bank deposit, with no exceptions in the months checked.
+
+    Groups `credits` (transactions from parse_quickbooks_detail()['transactions']
+    where is_income is True) by exact date, matches each group's total
+    against a single bank deposit (same month first, then next month for the
+    lag case - same search strategy as find_bank_statement_month), and
+    mutates every transaction dict in the group with the result.
+
+    Args:
+        credits:       list of credit transaction dicts, mutated in place
+        month_label:   the QB-recorded month, e.g. 'July 2025'
+        bank_by_month: {month_label: parse_chase_pdf() result} for every
+                       processed month
+        fiscal_order:  month_labels in true chronological order
+    """
+    by_date = {}
+    for t in credits:
+        by_date.setdefault(t['date'], []).append(t)
+
+    def exact_match(bank, bank_month_label, target_date, target_amount):
+        try:
+            year = int(bank_month_label.split()[1])
+        except (IndexError, ValueError):
+            return False
+        for d in bank.get('deposits', []):
+            try:
+                d_date = datetime.strptime(f"{d['date']}/{year}", '%m/%d/%Y')
+            except (ValueError, KeyError):
+                continue
+            if abs(d['amount'] - target_amount) < 0.01 and d_date.date() == target_date.date():
+                return True
+        return False
+
+    def amount_only_match(bank, target_amount):
+        return any(abs(d['amount'] - target_amount) < 0.01
+                   for d in bank.get('deposits', []))
+
+    for date_str, group in by_date.items():
+        try:
+            group_date = datetime.strptime(date_str, '%m/%d/%Y')
+        except (ValueError, TypeError):
+            for t in group:
+                t['bank_statement_month'] = None
+            continue
+
+        group_sum = round(sum(t['amount'] for t in group), 2)
+        matched_month = None
+
+        bank = bank_by_month.get(month_label)
+        if bank and exact_match(bank, month_label, group_date, group_sum):
+            matched_month = month_label
+        elif month_label in fiscal_order:
+            idx = fiscal_order.index(month_label)
+            if idx + 1 < len(fiscal_order):
+                next_label = fiscal_order[idx + 1]
+                next_bank = bank_by_month.get(next_label)
+                if next_bank and amount_only_match(next_bank, group_sum):
+                    matched_month = next_label
+
+        for t in group:
+            t['bank_statement_month'] = matched_month
+
+
+# ── 5. CONSOLIDATE GIVEBACKS PAYOUTS INTO CREDITS ─────────────────────────────
+
+def consolidate_givebacks_payouts(credit_txns: list, payouts: list):
+    """
+    QuickBooks splits a single Givebacks/MemberHub bank deposit across
+    several income-category line items - Credits should show one row per
+    actual payout, not one row per QuickBooks category split.
+
+    Only transactions QuickBooks itself already tagged as Givebacks-sourced
+    are ever touched: parse_quickbooks_detail sets description to exactly
+    'MemberHub/Givebacks Deposit' whenever the raw description contains
+    'ORIG CO NAME' or 'GB Payout'. This is a more precise signal than
+    category name (which varies - 'Misc MemberHub Income', 'Membership',
+    'Family Membership' all appear for genuinely Givebacks-sourced rows) and
+    means a non-Givebacks transaction can never accidentally get swept in,
+    even if it happens to share a date with a real payout.
+
+    Args:
+        credit_txns: this month's credit transactions - must already have
+                     'bank_statement_month' set (from
+                     match_credits_to_bank_statement) before calling this
+        payouts:     list of {'total': float, 'items': [...], 'source_file': str},
+                     one per Givebacks CSV file for this month (parsed
+                     individually, not merged - see parse_givebacks_files)
+
+    A payout's QuickBooks entries usually land on one date, but occasionally
+    QuickBooks records a single payout's category split across a couple of
+    *different* dates - so unmatched payouts get a second pass that tries
+    summing combinations of remaining date-groups (up to 5 at a time; a
+    payout split across more dates than that is vanishingly unlikely and not
+    worth the combinatorial cost). A combination only counts if it's the
+    *unique* one that sums to the payout's total - if two different
+    combinations both work, that's genuinely ambiguous and the payout is
+    left unmatched rather than guessed at.
+
+    Returns:
+        (consolidated_credits, payout_dates)
+        consolidated_credits: credit_txns with matched Givebacks groups
+            replaced by one consolidated row each; everything else
+            (non-Givebacks transactions, and any Givebacks-tagged date-group
+            that didn't match a payout) passes through unchanged
+        payout_dates: {payout_index: date_str_or_None} - None means no
+            matching date-group (or unambiguous combination) was found for
+            that payout (render as unreconciled in MemberHub_Summary, don't
+            drop it) - most commonly because the payout simply isn't
+            recorded in QuickBooks this month at all, which no amount of
+            matching logic can fix
+    """
+    givebacks_txns = [t for t in credit_txns
+                      if t.get('description') == 'MemberHub/Givebacks Deposit']
+    other_txns = [t for t in credit_txns
+                 if t.get('description') != 'MemberHub/Givebacks Deposit']
+
+    by_date = {}
+    for t in givebacks_txns:
+        by_date.setdefault(t['date'], []).append(t)
+
+    date_group_sums = {date: round(sum(t['amount'] for t in group), 2)
+                       for date, group in by_date.items()}
+    used_dates = set()
+    payout_dates = {}
+    consolidated_rows = []
+
+    def add_consolidated_row(dates, total):
+        combined_txns = [t for d in dates for t in by_date[d]]
+        earliest = min(dates, key=lambda d: datetime.strptime(d, '%m/%d/%Y'))
+        consolidated_rows.append({
+            'date':                 earliest,
+            'category':             'MemberHub/Givebacks Deposit',
+            'amount':               total,
+            'is_income':            True,
+            'bank_statement_month': combined_txns[0].get('bank_statement_month'),
+        })
+        return earliest
+
+    # Phase 1: exact single-date match.
+    unmatched_payouts = []
+    for i, payout in enumerate(payouts):
+        payout_total = round(payout['total'], 2)
+        matched_date = None
+        for date, group_sum in date_group_sums.items():
+            if date in used_dates:
+                continue
+            if abs(group_sum - payout_total) < 0.01:
+                matched_date = date
+                used_dates.add(date)
+                break
+        if matched_date:
+            payout_dates[i] = add_consolidated_row([matched_date], date_group_sums[matched_date])
+        else:
+            payout_dates[i] = None
+            unmatched_payouts.append(i)
+
+    # Phase 2: cross-date combination match for whatever's still unmatched
+    # (a single payout whose QuickBooks entries landed on different dates).
+    for i in unmatched_payouts:
+        payout_total = round(payouts[i]['total'], 2)
+        available = [d for d in date_group_sums if d not in used_dates]
+        matches = []
+        for r in range(2, min(len(available), 5) + 1):
+            for combo in combinations(available, r):
+                if abs(round(sum(date_group_sums[d] for d in combo), 2) - payout_total) < 0.01:
+                    matches.append(combo)
+                    if len(matches) > 1:
+                        break
+            if len(matches) > 1:
+                break
+        if len(matches) == 1:
+            combo = matches[0]
+            used_dates.update(combo)
+            payout_dates[i] = add_consolidated_row(list(combo), payout_total)
+
+    # Givebacks-tagged date-groups that never matched a payout (individually
+    # or in combination) pass through unchanged - safe fallback, still
+    # visible, just not consolidated.
+    for date, group in by_date.items():
+        if date not in used_dates:
+            consolidated_rows.extend(group)
+
+    return other_txns + consolidated_rows, payout_dates
+
+
+def extract_payout_id(filename: str):
+    """
+    Extracts the Givebacks payout ID from a filename like
+    'givebacks_august_po_1Rql024TnYF4pDk8eQ4Q3ZZ8.csv' -> '1Rql024TnYF4pDk8eQ4Q3ZZ8'.
+
+    The same payout file has been found copied into more than one month's
+    input/{Month}_{Year}/givebacks/ folder in practice (e.g. a payout
+    downloaded/placed under both July and August) - since each month is
+    processed independently, that silently double-counts the payout across
+    two months rather than raising an error. This lets a caller build a
+    cross-month registry to catch it. Returns None for a filename that
+    doesn't match the expected pattern (e.g. hand-renamed) - treat that as
+    "can't check," not as an error.
+    """
+    m = re.search(r'_po_([A-Za-z0-9]+)\.csv$', filename, re.IGNORECASE)
+    return m.group(1) if m else None
 
 
