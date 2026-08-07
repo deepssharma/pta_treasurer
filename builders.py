@@ -893,6 +893,30 @@ def _payout_band(ws, row, label, total, n_cols, amount_col):
     return row + 1
 
 
+def _deposit_band(ws, row, date_str, total, month_short, bank_stmt_short, amount_col):
+    """
+    Header row for a group of same-date Credits rows that together match one
+    confirmed real Chase bank deposit (see build_credits_sheet) - shows the
+    deposit as a single auditable total, with its QuickBooks category
+    breakdown nested underneath via plain _wide_data_row calls.
+    """
+    for i in range(7):
+        c = ws.cell(row=row, column=i + 1)
+        c.fill = LTBLUE_FILL; c.border = THIN_BORDER
+    ws.cell(row=row, column=1, value=date_str).font = BOLD_FONT
+    ws.cell(row=row, column=1).alignment = Alignment(horizontal='left', indent=1)
+    ws.cell(row=row, column=2, value='Bank Deposit').font = BOLD_FONT
+    ws.cell(row=row, column=2).alignment = Alignment(horizontal='center')
+    c = ws.cell(row=row, column=amount_col + 1, value=total)
+    c.font = BOLD_FONT; c.number_format = MONEY_FMT; c.alignment = Alignment(horizontal='right')
+    ws.cell(row=row, column=4, value=month_short).font = BOLD_FONT
+    ws.cell(row=row, column=4).alignment = Alignment(horizontal='center')
+    ws.cell(row=row, column=5, value=bank_stmt_short).font = BOLD_FONT
+    ws.cell(row=row, column=5).alignment = Alignment(horizontal='center')
+    ws.row_dimensions[row].height = 16
+    return row + 1
+
+
 def _wide_data_row(ws, row, values, money_cols=()):
     for i, val in enumerate(values):
         c = ws.cell(row=row, column=i + 1, value=val)
@@ -947,6 +971,19 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
     still maps from the real category, so the budget rollup is unaffected;
     only the CATEGORY label changes, to distinguish it from an electronic
     payout at a glance.
+
+    When several same-date rows together match one confirmed real Chase
+    deposit (parsers.match_credits_to_bank_statement already verified the
+    date-group's total against an actual bank deposit amount - e.g. a single
+    $7,118.12 deposit that QuickBooks split into 'Book Fair' $6,219.40 and
+    'Spiritwear' $898.72), they render as a bold 'Bank Deposit' band showing
+    the real deposit total, with the QuickBooks category breakdown nested
+    underneath - an auditor matching against the Chase statement sees the
+    deposit total first, not two unrelated-looking category rows that
+    silently need to be added together to reconcile. A lone row, or a group
+    that never matched a real bank deposit (bank_statement_month is None -
+    can't claim a grouping that isn't verified), still renders flat as
+    before.
     """
     qb_to_budget_map = qb_to_budget_map or {}
     ws.sheet_view.showGridLines = False
@@ -959,23 +996,43 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
         'DEPOSIT DATE', 'CATEGORY', '$ AMOUNT', 'MONTH', 'BANK STATEMENT',
         'BUDGET LINE', 'RUNNING TOTAL'])
 
+    def render_flat_row(t, running):
+        budget_line = qb_to_budget_map.get(t['category'], t['category'])
+        desc = (t.get('description') or '').strip().upper()
+        is_bank_deposit = desc == 'DEPOSIT' or desc.startswith('DEPOSIT ID NUMBER')
+        category_label = 'Bank Deposit (cash/check)' if is_bank_deposit else t['category']
+        bank_stmt = t.get('bank_statement_month')
+        bank_stmt = bank_stmt.split()[0] if bank_stmt else '—'
+        return [t['date'], category_label, t['amount'],
+                month_label.split()[0], bank_stmt, budget_line, running]
+
     running = 0.0
     for month_label, txns in credits_by_month:
         if not txns:
             continue
         row = _month_band(ws, row, month_label, n_cols=7)
+
+        by_date = {}
         for t in _sort_by_date(txns):
-            running += t['amount']
-            budget_line = qb_to_budget_map.get(t['category'], t['category'])
-            desc = (t.get('description') or '').strip().upper()
-            is_bank_deposit = desc == 'DEPOSIT' or desc.startswith('DEPOSIT ID NUMBER')
-            category_label = 'Bank Deposit (cash/check)' if is_bank_deposit else t['category']
-            bank_stmt = t.get('bank_statement_month')
-            bank_stmt = bank_stmt.split()[0] if bank_stmt else '—'
-            row = _wide_data_row(ws, row, [
-                t['date'], category_label, t['amount'],
-                month_label.split()[0], bank_stmt, budget_line, running,
-            ], money_cols={2, 6})
+            by_date.setdefault(t['date'], []).append(t)
+
+        for date_str, group in by_date.items():
+            bank_stmt_val = group[0].get('bank_statement_month')
+            if len(group) > 1 and bank_stmt_val:
+                deposit_total = round(sum(t['amount'] for t in group), 2)
+                row = _deposit_band(ws, row, date_str, deposit_total,
+                                     month_label.split()[0], bank_stmt_val.split()[0],
+                                     amount_col=2)
+                for t in group:
+                    running += t['amount']
+                    budget_line = qb_to_budget_map.get(t['category'], t['category'])
+                    row = _wide_data_row(ws, row, [
+                        None, t['category'], t['amount'], None, None, budget_line, running,
+                    ], money_cols={2, 6})
+            else:
+                for t in group:
+                    running += t['amount']
+                    row = _wide_data_row(ws, row, render_flat_row(t, running), money_cols={2, 6})
 
     row = _wide_total_row(ws, row, 7, 'TOTAL CREDITS', running, amount_col=2)
     return row

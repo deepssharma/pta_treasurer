@@ -378,6 +378,62 @@ def test_build_credits_sheet_labels_raw_bank_deposits():
     assert data_rows['09/19/2025'][1] == 'MemberHub/Givebacks Deposit'
 
 
+def test_build_credits_sheet_nests_multi_category_bank_deposit():
+    # Real scenario: one $7,118.12 Chase deposit that QuickBooks split
+    # across two categories - should render as one 'Bank Deposit' band
+    # (the real, auditable total) with Book Fair/Spiritwear nested beneath,
+    # not two unrelated-looking flat rows.
+    credits_by_month = [
+        ('February 2026', [
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Book Fair', 'amount': 6219.40,
+             'is_income': True, 'bank_statement_month': 'February 2026'},
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Spiritwear', 'amount': 898.72,
+             'is_income': True, 'bank_statement_month': 'February 2026'},
+        ]),
+    ]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, credits_by_month, 'Test PTA',
+                         {'Book Fair': 'Book Fair', 'Spiritwear': 'Spiritwear'})
+    rows = _cell_values(ws)
+
+    band_rows = [r for r in rows if r[1] == 'Bank Deposit']
+    assert len(band_rows) == 1
+    assert band_rows[0][0] == '02/27/2026'
+    assert round(band_rows[0][2], 2) == 7118.12
+
+    categories = [r[1] for r in rows if r[1] in ('Book Fair', 'Spiritwear')]
+    assert sorted(categories) == ['Book Fair', 'Spiritwear']
+    amounts = sorted(r[2] for r in rows if r[1] in ('Book Fair', 'Spiritwear'))
+    assert amounts == [898.72, 6219.40]
+    # running total still progresses per underlying category row
+    running_totals = sorted(r[6] for r in rows if r[1] in ('Book Fair', 'Spiritwear'))
+    assert running_totals == [898.72, 7118.12] or running_totals == [6219.40, 7118.12]
+
+
+def test_build_credits_sheet_no_band_for_unmatched_multi_row_date():
+    # Same date, more than one row, but bank_statement_month is None -
+    # never verified against a real deposit, so must NOT be grouped into a
+    # band (that would be claiming a reconciliation that doesn't exist).
+    credits_by_month = [
+        ('February 2026', [
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Book Fair', 'amount': 100.0,
+             'is_income': True, 'bank_statement_month': None},
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Spiritwear', 'amount': 50.0,
+             'is_income': True, 'bank_statement_month': None},
+        ]),
+    ]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, credits_by_month, 'Test PTA')
+    rows = _cell_values(ws)
+    assert not any(r[1] == 'Bank Deposit' for r in rows)
+
+
 def test_build_debits_sheet_running_total_and_notes_blank():
     wb = openpyxl.Workbook()
     ws = wb.active
