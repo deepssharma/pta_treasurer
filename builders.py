@@ -537,11 +537,21 @@ def build_manifest(ws, month_folder, org_name, month_label,
 # ── 5. YTD SUMMARY ───────────────────────────────────────────────────────────
 def build_ytd_summary(ws, income_merged, expense_merged, org_name,
                       month_label, fiscal_idx, fiscal_months,
-                      bank, balance_forward=0.0, readthon=None):
+                      bank, balance_forward=0.0, readthon=None, fy_start=None):
+    """
+    fy_start: the fiscal year's starting calendar year (e.g. 2025 for
+    FY2025-26), used only to render the 'Balance Forward'/'as of' date
+    labels for the right year - callers should pass the actual fiscal year
+    being reported (see _fiscal_year_start in the notebook), not leave this
+    hardcoded to whichever fiscal year the sheet was first built for.
+    """
     ws.sheet_view.showGridLines = False
     ws.column_dimensions['A'].width = 28
     for col in ['B','C','D','E','F','G','H','I']:
         ws.column_dimensions[col].width = 14
+
+    fy_start_yy = f'{fy_start % 100:02d}' if fy_start is not None else '25'
+    fy_end_yy   = f'{(fy_start + 1) % 100:02d}' if fy_start is not None else '26'
 
     # Title
     ws.merge_cells('A1:I1'); c = ws['A1']
@@ -551,7 +561,7 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
     ws.row_dimensions[1].height = 28
 
     ws.merge_cells('A2:I2'); c = ws['A2']
-    c.value = f'7/1/25 - {datetime.today().strftime("%-m/%-d/%Y")}'
+    c.value = f'7/1/{fy_start_yy} - {datetime.today().strftime("%-m/%-d/%Y")}'
     c.font = Font(name='Arial', italic=True, size=10, color='666666')
     c.alignment = Alignment(horizontal='center')
     ws.row_dimensions[2].height = 16
@@ -562,7 +572,7 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
     ws['B3'].value = balance_forward
     ws['B3'].font = BOLD_FONT
     ws['B3'].number_format = MONEY_FMT
-    ws['C3'].value = 'as of 6/30/25'
+    ws['C3'].value = f'as of 6/30/{fy_start_yy}'
     ws['C3'].font = Font(name='Arial', italic=True, size=9, color='666666')
 
     ws['E3'].value = 'Current Balance:'
