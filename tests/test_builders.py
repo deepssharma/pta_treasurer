@@ -241,6 +241,26 @@ def test_build_givebacks_item_count():
     assert items_found == 2
 
 
+def test_build_givebacks_sums_multiple_bank_deposits():
+    # A month can have more than one GB Payout deposit clear separately
+    # (e.g. two payouts landing days apart) -- the reconciliation total
+    # must sum every matching deposit, not just the first one found.
+    # MOCK_GIVEBACKS totals 95.14 + 15.0 = 110.14; split across two
+    # separate bank deposits that should fully reconcile.
+    bank = dict(MOCK_BANK, deposits=[
+        {'date': '06/22', 'description': 'Orig CO Name:Gb Payouts Orig ID:123 CO Entry', 'amount': 100.14},
+        {'date': '06/26', 'description': 'Orig CO Name:Gb Payouts Orig ID:123 CO Entry', 'amount': 10.0},
+    ])
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_givebacks(ws, MOCK_GIVEBACKS, bank, 'Test PTA')
+
+    values = {row[0]: row[3] for row in ws.iter_rows(values_only=True)
+              if row[0] in ('Givebacks Deposit in Bank Statement', 'Difference')}
+    assert values['Givebacks Deposit in Bank Statement'] == 110.14
+    assert abs(values['Difference']) < 0.01
+
+
 # ── Fiscal months constants test ──────────────────────────────────────────────
 
 def test_fiscal_months_count():

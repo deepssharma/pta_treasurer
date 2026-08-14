@@ -444,10 +444,14 @@ def build_givebacks(ws, givebacks, bank, org_name):
 
     _sec_hdr(ws, 'GIVEBACK <-> BANK RECONCILIATION', row, n=6); row += 1
     gb_total = sum(g['total'] for g in givebacks)
-    bank_gb  = next(
-        (d['amount'] for d in bank['deposits']
-         if 'gb payout' in d.get('description','').lower()
-         or 'givebacks' in d.get('description','').lower()), 0.0)
+    # A month can have more than one GB Payout deposit clear separately
+    # (e.g. two payouts landing days apart) -- sum all matches, not just
+    # the first one, or a real second deposit gets silently dropped and
+    # shows as a false unreconciled "Difference".
+    bank_gb  = sum(
+        d['amount'] for d in bank['deposits']
+        if 'gb payout' in d.get('description','').lower()
+        or 'givebacks' in d.get('description','').lower())
 
     for lbl, val in [
         ('Givebacks Platform Total',            gb_total),
@@ -857,8 +861,9 @@ def build_ytd_summary_compact(ws, income_merged, expense_merged, org_name,
                                month_label, fiscal_idx, fiscal_months,
                                bank, balance_forward=0.0, readthon=None, fy_start=None):
     """
-    Prototype compact YTD Summary: 5 columns (Category, Budget, Actual,
-    Last Year, Profit/Loss) instead of build_ytd_summary's 9. A category
+    Compact YTD Summary: 5 columns (Category, Budget, Actual, Last Year,
+    Profit/Loss) instead of build_ytd_summary's 9 -- this is now the
+    default YTD Summary tab in the real pipeline (Cell 9). A category
     with both an income and an expense side (e.g. Book Fair) renders as
     two rows -- "<item> — Income" / "<item> — Expense" -- rather than
     cramming two numbers into one cell, so every Budget/Actual/Last Year
@@ -869,9 +874,10 @@ def build_ytd_summary_compact(ws, income_merged, expense_merged, org_name,
     Budget/Actual/Last Year cells show combined "$income / $expense" text
     since nothing above them depends on summing a TOTAL row further.
 
-    Not a replacement for build_ytd_summary -- built to run side by side
-    against real data for comparison before deciding whether to swap it
-    in for real.
+    build_ytd_summary (the original 9-column version) is kept as-is,
+    still fully working, for on-demand use whenever the regular version
+    is asked for specifically -- not called by the default pipeline
+    anymore, but not deleted either.
     """
     ws.sheet_view.showGridLines = False
     ws.column_dimensions['A'].width = 32
@@ -881,7 +887,7 @@ def build_ytd_summary_compact(ws, income_merged, expense_merged, org_name,
     fy_start_yy = f'{fy_start % 100:02d}' if fy_start is not None else '25'
 
     ws.merge_cells('A1:E1'); c = ws['A1']
-    c.value = f"{org_name}  —  Treasurer's Report (Compact)"
+    c.value = f"{org_name}  —  Treasurer's Report"
     c.font = Font(name='Arial', bold=True, size=14, color=NAVY)
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 28
