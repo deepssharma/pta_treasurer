@@ -325,7 +325,7 @@ def test_build_credits_sheet_running_total():
     ws = wb.active
     build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
     rows = _cell_values(ws)
-    amounts = [r[6] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    amounts = [r[7] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
     assert amounts == [110.14, 160.14]  # cumulative across months
 
 
@@ -343,8 +343,19 @@ def test_build_credits_sheet_budget_line_mapping():
     ws = wb.active
     build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA', MOCK_QB_TO_BUDGET_MAP)
     rows = _cell_values(ws)
-    budget_lines = [r[5] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    budget_lines = [r[6] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
     assert budget_lines == ['Membership Income', 'Book Fair']  # mapped / falls back to raw category
+
+
+def test_build_credits_sheet_shows_payee():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA')
+    rows = _cell_values(ws)
+    header = [r for r in rows if r[0] == 'DEPOSIT DATE'][0]
+    assert header[1] == 'PAYEE'
+    payees = [r[1] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    assert payees == ['MemberHub', 'MemberHub']
 
 
 def test_build_credits_sheet_total_row():
@@ -354,7 +365,7 @@ def test_build_credits_sheet_total_row():
     rows = _cell_values(ws)
     total_rows = [r for r in rows if r[0] == 'TOTAL CREDITS']
     assert len(total_rows) == 1
-    assert total_rows[0][2] == 160.14
+    assert total_rows[0][3] == 160.14
 
 
 def test_build_credits_sheet_bank_statement_column():
@@ -363,8 +374,8 @@ def test_build_credits_sheet_bank_statement_column():
     build_credits_sheet(ws, MOCK_CREDITS_BY_MONTH, 'Test PTA')
     rows = _cell_values(ws)
     header = [r for r in rows if r[0] == 'DEPOSIT DATE'][0]
-    assert header[4] == 'BANK STATEMENT'
-    bank_stmts = [r[4] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
+    assert header[5] == 'BANK STATEMENT'
+    bank_stmts = [r[5] for r in rows if isinstance(r[0], str) and '/' in str(r[0])]
     assert bank_stmts == ['August', 'August']  # July txn lagged into August's statement
 
 
@@ -389,13 +400,13 @@ def test_build_credits_sheet_labels_raw_bank_deposits():
     rows = _cell_values(ws)
     data_rows = {r[0]: r for r in rows if isinstance(r[0], str) and '/' in str(r[0])}
     # both raw cash/check deposits show the generic category label...
-    assert data_rows['09/24/2025'][1] == 'Bank Deposit (cash/check)'
-    assert data_rows['09/12/2025'][1] == 'Bank Deposit (cash/check)'
+    assert data_rows['09/24/2025'][2] == 'Bank Deposit (cash/check)'
+    assert data_rows['09/12/2025'][2] == 'Bank Deposit (cash/check)'
     # ...but keep their real budget line
-    assert data_rows['09/24/2025'][5] == 'Book Fair'
-    assert data_rows['09/12/2025'][5] == 'Holiday Boutique'
+    assert data_rows['09/24/2025'][6] == 'Book Fair'
+    assert data_rows['09/12/2025'][6] == 'Holiday Boutique'
     # a Givebacks-sourced row is untouched
-    assert data_rows['09/19/2025'][1] == 'MemberHub/Givebacks Deposit'
+    assert data_rows['09/19/2025'][2] == 'MemberHub/Givebacks Deposit'
 
 
 def test_build_credits_sheet_nests_multi_category_bank_deposit():
@@ -405,7 +416,7 @@ def test_build_credits_sheet_nests_multi_category_bank_deposit():
     # not two unrelated-looking flat rows.
     credits_by_month = [
         ('February 2026', [
-            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': 'Deepali Sharma',
              'description': 'DEPOSIT', 'category': 'Book Fair', 'amount': 6219.40,
              'is_income': True, 'bank_statement_month': 'February 2026'},
             {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
@@ -419,18 +430,57 @@ def test_build_credits_sheet_nests_multi_category_bank_deposit():
                          {'Book Fair': 'Book Fair', 'Spiritwear': 'Spiritwear'})
     rows = _cell_values(ws)
 
-    band_rows = [r for r in rows if r[1] == 'Bank Deposit']
+    band_rows = [r for r in rows if r[2] == 'Bank Deposit']
     assert len(band_rows) == 1
     assert band_rows[0][0] == '02/27/2026'
-    assert round(band_rows[0][2], 2) == 7118.12
+    assert round(band_rows[0][3], 2) == 7118.12
 
-    categories = [r[1] for r in rows if r[1] in ('Book Fair', 'Spiritwear')]
+    nested = [r for r in rows if r[2] in ('Book Fair', 'Spiritwear')]
+    categories = [r[2] for r in nested]
     assert sorted(categories) == ['Book Fair', 'Spiritwear']
-    amounts = sorted(r[2] for r in rows if r[1] in ('Book Fair', 'Spiritwear'))
+    amounts = sorted(r[3] for r in nested)
     assert amounts == [898.72, 6219.40]
+    # each nested row keeps its own payee, distinct from the blank band row
+    payees = {r[2]: r[1] for r in nested}
+    assert payees['Book Fair'] == 'Deepali Sharma'
+    assert payees['Spiritwear'] == ''
     # running total still progresses per underlying category row
-    running_totals = sorted(r[6] for r in rows if r[1] in ('Book Fair', 'Spiritwear'))
+    running_totals = sorted(r[7] for r in nested)
     assert running_totals == [898.72, 7118.12] or running_totals == [6219.40, 7118.12]
+
+
+def test_build_credits_sheet_deposit_group_has_bracket_border():
+    # The band row plus every nested row underneath it should carry a
+    # bold left/right border (GROUP_TOP/MID/LAST_BORDER), and the last
+    # nested row a bold bottom border, so the whole deposit reads as one
+    # bracketed unit rather than blending into ordinary transaction rows.
+    credits_by_month = [
+        ('February 2026', [
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Book Fair', 'amount': 6219.40,
+             'is_income': True, 'bank_statement_month': 'February 2026'},
+            {'date': '02/27/2026', 'type': 'Deposit', 'check_no': '', 'payee': '',
+             'description': 'DEPOSIT', 'category': 'Spiritwear', 'amount': 898.72,
+             'is_income': True, 'bank_statement_month': 'February 2026'},
+        ]),
+    ]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    build_credits_sheet(ws, credits_by_month, 'Test PTA')
+
+    # Locate the band row (col B = 'Bank Deposit') and the two rows below it.
+    band_row_idx = next(
+        r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=3).value == 'Bank Deposit')
+    band_left_border = ws.cell(row=band_row_idx, column=1).border
+    nested1_border = ws.cell(row=band_row_idx + 1, column=1).border
+    nested2_border = ws.cell(row=band_row_idx + 2, column=1).border  # last nested row
+
+    assert band_left_border.top.style == 'medium'
+    assert band_left_border.left.style == 'medium'
+    assert nested1_border.left.style == 'medium'
+    assert nested1_border.bottom.style == 'thin'  # seam between nested rows stays thin
+    assert nested2_border.left.style == 'medium'
+    assert nested2_border.bottom.style == 'medium'  # bottom of the whole group is bold
 
 
 def test_build_credits_sheet_no_band_for_unmatched_multi_row_date():
@@ -451,7 +501,7 @@ def test_build_credits_sheet_no_band_for_unmatched_multi_row_date():
     ws = wb.active
     build_credits_sheet(ws, credits_by_month, 'Test PTA')
     rows = _cell_values(ws)
-    assert not any(r[1] == 'Bank Deposit' for r in rows)
+    assert not any(r[2] == 'Bank Deposit' for r in rows)
 
 
 def test_build_debits_sheet_running_total_and_notes_blank():

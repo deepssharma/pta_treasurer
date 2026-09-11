@@ -34,6 +34,14 @@ THIN        = Side(style='thin',   color='AAAAAA')
 MED         = Side(style='medium', color=NAVY)
 THIN_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 MED_BORDER  = Border(left=MED,  right=MED,  top=MED,  bottom=MED)
+
+# Brackets a variable-length group of rows (e.g. a Credits-sheet "Bank
+# Deposit" band plus its nested category breakdown) with a bold outer
+# border and thin seams between rows inside it, so the group reads as
+# one unit rather than a run of ordinary transaction rows.
+GROUP_TOP_BORDER  = Border(left=MED, right=MED, top=MED,  bottom=THIN)
+GROUP_MID_BORDER  = Border(left=MED, right=MED, top=THIN, bottom=THIN)
+GROUP_LAST_BORDER = Border(left=MED, right=MED, top=THIN, bottom=MED)
 MONEY_FMT   = '$#,##0.00_);($#,##0.00)'
 
 FISCAL_MONTHS = ['JULY','AUG','SEPT','OCT','NOV','DEC',
@@ -1215,29 +1223,33 @@ def _deposit_band(ws, row, date_str, total, month_short, bank_stmt_short, amount
     Header row for a group of same-date Credits rows that together match one
     confirmed real Chase bank deposit (see build_credits_sheet) - shows the
     deposit as a single auditable total, with its QuickBooks category
-    breakdown nested underneath via plain _wide_data_row calls.
+    breakdown (and each line's payee) nested underneath via plain
+    _wide_data_row calls. PAYEE is left blank on the band row itself since
+    a single bank deposit can combine lines from different payers - see
+    each nested row for who each portion came from.
     """
-    for i in range(7):
+    for i in range(8):
         c = ws.cell(row=row, column=i + 1)
-        c.fill = LTBLUE_FILL; c.border = THIN_BORDER
+        c.fill = LTBLUE_FILL; c.border = GROUP_TOP_BORDER
     ws.cell(row=row, column=1, value=date_str).font = BOLD_FONT
     ws.cell(row=row, column=1).alignment = Alignment(horizontal='left', indent=1)
-    ws.cell(row=row, column=2, value='Bank Deposit').font = BOLD_FONT
-    ws.cell(row=row, column=2).alignment = Alignment(horizontal='center')
+    ws.cell(row=row, column=3, value='Bank Deposit').font = BOLD_FONT
+    ws.cell(row=row, column=3).alignment = Alignment(horizontal='center')
     c = ws.cell(row=row, column=amount_col + 1, value=total)
     c.font = BOLD_FONT; c.number_format = MONEY_FMT; c.alignment = Alignment(horizontal='right')
-    ws.cell(row=row, column=4, value=month_short).font = BOLD_FONT
-    ws.cell(row=row, column=4).alignment = Alignment(horizontal='center')
-    ws.cell(row=row, column=5, value=bank_stmt_short).font = BOLD_FONT
+    ws.cell(row=row, column=5, value=month_short).font = BOLD_FONT
     ws.cell(row=row, column=5).alignment = Alignment(horizontal='center')
+    ws.cell(row=row, column=6, value=bank_stmt_short).font = BOLD_FONT
+    ws.cell(row=row, column=6).alignment = Alignment(horizontal='center')
     ws.row_dimensions[row].height = 16
     return row + 1
 
 
-def _wide_data_row(ws, row, values, money_cols=()):
+def _wide_data_row(ws, row, values, money_cols=(), border=None):
+    border = border or THIN_BORDER
     for i, val in enumerate(values):
         c = ws.cell(row=row, column=i + 1, value=val)
-        c.font = BODY_FONT; c.border = THIN_BORDER
+        c.font = BODY_FONT; c.border = border
         if i in money_cols:
             c.number_format = MONEY_FMT
             c.alignment = Alignment(horizontal='right')
@@ -1277,9 +1289,14 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
     fiscal-year order. Each transaction is one dict from
     parsers.parse_quickbooks_detail()['transactions'] where is_income is True.
 
-    Only auto-derivable columns are populated (date, category, amount, month,
-    mapped budget line, running total) - there's no Notes column here because
-    nothing in the parsed data maps to hand-written reconciliation notes.
+    Only auto-derivable columns are populated (date, payee, category, amount,
+    month, mapped budget line, running total) - there's no Notes column here
+    because nothing in the parsed data maps to hand-written reconciliation
+    notes. PAYEE comes straight from QuickBooks' own Name field (parsers.py)
+    - often blank for electronic Givebacks/MemberHub payouts (no individual
+    payer recorded), populated for a check or a named cash/check deposit -
+    included so an auditor can see who a given line came from without
+    cross-referencing QuickBooks by hand.
 
     A transaction QuickBooks recorded as a literal cash/check bank deposit
     (raw description 'DEPOSIT' or 'DEPOSIT ID NUMBER ...', not an electronic
@@ -1294,23 +1311,27 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
     date-group's total against an actual bank deposit amount - e.g. a single
     $7,118.12 deposit that QuickBooks split into 'Book Fair' $6,219.40 and
     'Spiritwear' $898.72), they render as a bold 'Bank Deposit' band showing
-    the real deposit total, with the QuickBooks category breakdown nested
-    underneath - an auditor matching against the Chase statement sees the
-    deposit total first, not two unrelated-looking category rows that
-    silently need to be added together to reconcile. A lone row, or a group
-    that never matched a real bank deposit (bank_statement_month is None -
-    can't claim a grouping that isn't verified), still renders flat as
-    before.
+    the real deposit total, with the QuickBooks category breakdown (and each
+    line's own payee) nested underneath - an auditor matching against the
+    Chase statement sees the deposit total first, not two unrelated-looking
+    category rows that silently need to be added together to reconcile. The
+    whole group (band + its nested rows) is bracketed with a bold outer
+    border and thin seams between rows inside it, so it visually reads as
+    one deposit, not a run of ordinary transaction rows that happen to
+    follow each other. A lone row, or a group that never matched a real
+    bank deposit (bank_statement_month is None - can't claim a grouping
+    that isn't verified), still renders flat as before.
     """
     qb_to_budget_map = qb_to_budget_map or {}
     ws.sheet_view.showGridLines = False
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G'], [14, 30, 14, 10, 16, 26, 16]):
+    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+                       [14, 22, 24, 14, 10, 16, 22, 16]):
         ws.column_dimensions[col].width = w
 
-    row = _wide_hdr_row(ws, 1, org_name, 'Credits (Deposits) - Fiscal Year', 7)
+    row = _wide_hdr_row(ws, 1, org_name, 'Credits (Deposits) - Fiscal Year', 8)
     row += 1
     row = _wide_col_hdrs(row=row, ws=ws, labels=[
-        'DEPOSIT DATE', 'CATEGORY', '$ AMOUNT', 'MONTH', 'BANK STATEMENT',
+        'DEPOSIT DATE', 'PAYEE', 'CATEGORY', '$ AMOUNT', 'MONTH', 'BANK STATEMENT',
         'BUDGET LINE', 'RUNNING TOTAL'])
 
     def render_flat_row(t, running):
@@ -1320,14 +1341,14 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
         category_label = 'Bank Deposit (cash/check)' if is_bank_deposit else t['category']
         bank_stmt = t.get('bank_statement_month')
         bank_stmt = bank_stmt.split()[0] if bank_stmt else '—'
-        return [t['date'], category_label, t['amount'],
+        return [t['date'], t.get('payee', ''), category_label, t['amount'],
                 month_label.split()[0], bank_stmt, budget_line, running]
 
     running = 0.0
     for month_label, txns in credits_by_month:
         if not txns:
             continue
-        row = _month_band(ws, row, month_label, n_cols=7)
+        row = _month_band(ws, row, month_label, n_cols=8)
 
         by_date = {}
         for t in _sort_by_date(txns):
@@ -1339,19 +1360,21 @@ def build_credits_sheet(ws, credits_by_month, org_name, qb_to_budget_map=None):
                 deposit_total = round(sum(t['amount'] for t in group), 2)
                 row = _deposit_band(ws, row, date_str, deposit_total,
                                      month_label.split()[0], bank_stmt_val.split()[0],
-                                     amount_col=2)
-                for t in group:
+                                     amount_col=3)
+                for i, t in enumerate(group):
                     running += t['amount']
                     budget_line = qb_to_budget_map.get(t['category'], t['category'])
+                    border = GROUP_LAST_BORDER if i == len(group) - 1 else GROUP_MID_BORDER
                     row = _wide_data_row(ws, row, [
-                        None, t['category'], t['amount'], None, None, budget_line, running,
-                    ], money_cols={2, 6})
+                        None, t.get('payee', ''), t['category'], t['amount'], None, None,
+                        budget_line, running,
+                    ], money_cols={3, 7}, border=border)
             else:
                 for t in group:
                     running += t['amount']
-                    row = _wide_data_row(ws, row, render_flat_row(t, running), money_cols={2, 6})
+                    row = _wide_data_row(ws, row, render_flat_row(t, running), money_cols={3, 7})
 
-    row = _wide_total_row(ws, row, 7, 'TOTAL CREDITS', running, amount_col=2)
+    row = _wide_total_row(ws, row, 8, 'TOTAL CREDITS', running, amount_col=3)
     return row
 
 
