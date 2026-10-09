@@ -435,13 +435,16 @@ def parse_chase_pdf(bank_file: Path) -> dict:
     bank['total_deposits']    = grab(r'Total Deposits and Additions\s+\$?([\d,]+\.\d{2})')
     bank['total_checks']      = grab(r'Total Checks Paid\s+\$?([\d,]+\.\d{2})')
     bank['total_fees']        = grab(r'Total Fees\s+\$?([\d,]+\.\d{2})')
-    bank['total_withdrawals'] = grab(
-        r'Total Electronic Withdrawals\s+\$?([\d,]+\.\d{2})'
+    # Electronic Withdrawals and Other Withdrawals are separate sections
+    # that can BOTH be present on the same statement (not alternatives) -
+    # summing them (each defaults to 0.0 via grab() if its section is
+    # absent) is what caught a real $150 "Other Withdrawals" charge that
+    # a previous if/elif-style fallback silently dropped whenever
+    # "Total Electronic Withdrawals" was already non-zero.
+    bank['total_withdrawals'] = (
+        grab(r'Total Electronic Withdrawals\s+\$?([\d,]+\.\d{2})')
+        + grab(r'Total Other Withdrawals\s+\$?([\d,]+\.\d{2})')
     )
-    if bank['total_withdrawals'] == 0.0:
-        bank['total_withdrawals'] = grab(
-            r'Total Other Withdrawals\s+\$?([\d,]+\.\d{2})'
-        )
     if bank['total_withdrawals'] == 0.0:
         bank['total_withdrawals'] = grab(
             r'Electronic Withdrawals\s+\d+\s+-?([\d,]+\.\d{2})'
