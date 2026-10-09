@@ -138,7 +138,7 @@ def build_treasurer(ws, qb, bank, month_label, org_name, readthon=None):
     et = row; row += 2
 
     ws.merge_cells(f'A{row}:D{row}')
-    ws[f'A{row}'].value = 'NET INCOME / (LOSS)'
+    ws[f'A{row}'].value = 'NET CHANGE IN FUNDS'
     ws[f'A{row}'].font = Font(name='Arial', bold=True, size=11, color=WHITE)
     ws[f'A{row}'].fill = NAVY_FILL
     ws[f'A{row}'].alignment = Alignment(horizontal='left', indent=1)
@@ -146,7 +146,7 @@ def build_treasurer(ws, qb, bank, month_label, org_name, readthon=None):
     for col in ['A','B','C','D']:
         ws[f'{col}{row}'].fill = GOLD_FILL
         ws[f'{col}{row}'].border = MED_BORDER
-    ws[f'A{row}'].value = 'Net Income (Loss)'
+    ws[f'A{row}'].value = 'Net Change in Funds'
     ws[f'A{row}'].font = TOTAL_FONT
     ws[f'A{row}'].alignment = Alignment(indent=1)
     ws[f'B{row}'].value = f'=B{it}-B{et}'
@@ -250,7 +250,25 @@ def build_treasurer(ws, qb, bank, month_label, org_name, readthon=None):
 # ── 2. BUDGET VS ACTUALS ──────────────────────────────────────────────────────
 
 def build_budget(ws, title, merged_data, org_name, fiscal_months,
-                 current_idx, show_pl=False, income_merged=None):
+                 current_idx, show_pl=False, income_merged=None,
+                 subheader_groups=None):
+    """subheader_groups: optional list of {'label': str, 'items': [item_names]}
+    -- inserts a bold label row before the first item of each group and
+    brackets the label row plus its items with a bold border (same
+    GROUP_TOP/MID/LAST_BORDER bracket used for Credits-sheet deposit
+    groups), so they visually read as one unit within their section --
+    without a separate section/total row. Purely visual -- merged_data
+    itself is untouched, so YTD Summary (which consumes the same
+    INCOME_MERGED/EXPENSE_MERGED dicts) is unaffected."""
+    subheader_groups = subheader_groups or []
+    group_label = {}   # item_name (first in group) -> label
+    group_of    = {}   # item_name -> group dict (any member)
+    group_last  = set()  # item_name (last in group)
+    for g in subheader_groups:
+        group_label[g['items'][0]] = g['label']
+        for it in g['items']:
+            group_of[it] = g
+        group_last.add(g['items'][-1])
     ws.sheet_view.showGridLines = False
     ws.column_dimensions['A'].width = 28
     ws.column_dimensions['B'].width = 13
@@ -309,6 +327,16 @@ def build_budget(ws, title, merged_data, org_name, fiscal_months,
         ss = dr + 1; dr += 1
 
         for ir, (item, (last_yr, budget, monthly)) in enumerate(items.items()):
+            if item in group_label:
+                for ci in range(1, 18):
+                    c = ws.cell(row=dr, column=ci)
+                    c.fill = LTBLUE_FILL; c.border = GROUP_TOP_BORDER
+                c = ws.cell(row=dr, column=1, value=group_label[item])
+                c.font = Font(name='Arial', bold=True, italic=True, size=10, color=NAVY)
+                c.alignment = Alignment(indent=1)
+                ws.row_dimensions[dr].height = 15
+                dr += 1
+
             fill = LGREY_FILL if ir % 2 == 1 else PatternFill()
             c = ws.cell(row=dr, column=1, value=item)
             c.font = BODY_FONT; c.fill = fill
@@ -347,6 +375,11 @@ def build_budget(ws, title, merged_data, org_name, fiscal_months,
             c = ws.cell(row=dr, column=17, value=pl_val)
             c.font = BODY_FONT; c.fill = fill; c.number_format = MONEY_FMT
             c.alignment = Alignment(horizontal='right'); c.border = THIN_BORDER
+
+            if item in group_of:
+                border = GROUP_LAST_BORDER if item in group_last else GROUP_MID_BORDER
+                for ci in range(1, 18):
+                    ws.cell(row=dr, column=ci).border = border
 
             ws.row_dimensions[dr].height = 15; dr += 1
 
@@ -662,7 +695,7 @@ def build_ytd_summary(ws, income_merged, expense_merged, org_name,
         },
         'entertainment': {
             'label':        'PTA Annual Fundraiser',
-            'income_keys':  ['ticket & raffle sales', 'sponsors'],
+            'income_keys':  ['raffles & tickets', 'sponsors'],
             'expense_keys': ['entertainment', 'raffles', 'venue'],
         },
     }
@@ -982,7 +1015,7 @@ def build_ytd_summary_compact(ws, income_merged, expense_merged, org_name,
         },
         'entertainment': {
             'label':        'PTA Annual Fundraiser',
-            'income_keys':  ['ticket & raffle sales', 'sponsors'],
+            'income_keys':  ['raffles & tickets', 'sponsors'],
             'expense_keys': ['entertainment', 'raffles', 'venue'],
         },
     }
